@@ -109,3 +109,40 @@ bool age_decrypt_from_file (const std::string& filename, std::ostream& output)
 	command.push_back(filename);
 	return successful_exit(exec_command(command, output));
 }
+
+bool age_yubikey_is_available ()
+{
+	std::vector<std::string>	command;
+	command.push_back("age-plugin-yubikey");
+	command.push_back("--list");
+	std::stringstream		output;
+	return successful_exit(exec_command(command, output));
+}
+
+std::vector<std::string> age_yubikey_list_recipients ()
+{
+	// age-plugin-yubikey --list outputs recipient lines like:
+	// #       Serial: 12345678, Slot: 1
+	// age1yubikey1...
+	std::vector<std::string>	command;
+	command.push_back("age-plugin-yubikey");
+	command.push_back("--list");
+	std::stringstream		command_output;
+	if (!successful_exit(exec_command(command, command_output))) {
+		throw Age_error("age-plugin-yubikey --list failed");
+	}
+
+	std::vector<std::string>	recipients;
+	std::string			line;
+	while (std::getline(command_output, line)) {
+		// Skip comment lines (start with #) and empty lines
+		if (line.empty() || line[0] == '#') {
+			continue;
+		}
+		// Recipient lines start with "age1yubikey1"
+		if (line.compare(0, 12, "age1yubikey1") == 0) {
+			recipients.push_back(line);
+		}
+	}
+	return recipients;
+}
