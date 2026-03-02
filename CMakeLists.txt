@@ -14,6 +14,7 @@ set(SOURCES
     src/commands.cpp
     src/crypto.cpp
     src/gpg.cpp
+    src/age.cpp
     src/key.cpp
     src/util.cpp
     src/parse_options.cpp
