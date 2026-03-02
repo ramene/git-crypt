@@ -1498,11 +1498,14 @@ void help_add_age_recipient (std::ostream& out)
 {
 	//     |--------------------------------------------------------------------------------| 80 chars
 	out << "Usage: git-crypt add-age-recipient [OPTIONS] AGE_RECIPIENT ..." << std::endl;
+	out << "   or: git-crypt add-age-recipient [OPTIONS] --ssh SSH_KEY_FILE ..." << std::endl;
 	out << std::endl;
 	out << "    -k, --key-name KEYNAME      Add recipient to given key, instead of default" << std::endl;
 	out << "    -n, --no-commit             Don't automatically commit" << std::endl;
+	out << "    --ssh                       Read SSH public keys from files" << std::endl;
 	out << std::endl;
-	out << "AGE_RECIPIENT is an age public key (age1...) or SSH public key." << std::endl;
+	out << "AGE_RECIPIENT is an age public key (age1...) or SSH public key string." << std::endl;
+	out << "With --ssh, arguments are paths to SSH public key files." << std::endl;
 	out << std::endl;
 	out << "Configuration:" << std::endl;
 	out << "    git config age.program PATH   Path to age binary (default: age)" << std::endl;
@@ -1514,11 +1517,13 @@ int add_age_recipient (int argc, const char** argv)
 {
 	const char*		key_name = 0;
 	bool			no_commit = false;
+	bool			ssh_mode = false;
 	Options_list		options;
 	options.push_back(Option_def("-k", &key_name));
 	options.push_back(Option_def("--key-name", &key_name));
 	options.push_back(Option_def("-n", &no_commit));
 	options.push_back(Option_def("--no-commit", &no_commit));
+	options.push_back(Option_def("--ssh", &ssh_mode));
 
 	int			argi = parse_options(options, argc, argv);
 	if (argc - argi == 0) {
@@ -1536,8 +1541,47 @@ int add_age_recipient (int argc, const char** argv)
 
 	// Collect recipient strings
 	std::vector<std::string>	recipients;
-	for (int i = argi; i < argc; ++i) {
-		recipients.push_back(argv[i]);
+	if (ssh_mode) {
+		// Read SSH public keys from files
+		for (int i = argi; i < argc; ++i) {
+			std::ifstream	key_file(argv[i]);
+			if (!key_file) {
+				std::clog << "Error: unable to read SSH key file: " << argv[i] << std::endl;
+				return 1;
+			}
+			std::string	line;
+			bool		found_key = false;
+			while (std::getline(key_file, line)) {
+				// Skip empty lines and comments
+				if (line.empty() || line[0] == '#') {
+					continue;
+				}
+				// SSH public key format: type base64data [comment]
+				// age accepts: "ssh-ed25519 AAAA..." or "ssh-rsa AAAA..."
+				if (line.compare(0, 4, "ssh-") == 0 ||
+				    line.compare(0, 11, "ecdsa-sha2-") == 0) {
+					// Strip trailing comment for cleanliness:
+					// keep "type base64" portion only
+					std::string::size_type	first_space = line.find(' ');
+					if (first_space != std::string::npos) {
+						std::string::size_type	second_space = line.find(' ', first_space + 1);
+						if (second_space != std::string::npos) {
+							line = line.substr(0, second_space);
+						}
+					}
+					recipients.push_back(line);
+					found_key = true;
+				}
+			}
+			if (!found_key) {
+				std::clog << "Error: no SSH public key found in: " << argv[i] << std::endl;
+				return 1;
+			}
+		}
+	} else {
+		for (int i = argi; i < argc; ++i) {
+			recipients.push_back(argv[i]);
+		}
 	}
 
 	// Load the symmetric key
