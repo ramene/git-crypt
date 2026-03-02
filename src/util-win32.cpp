@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <windows.h>
+#include <aclapi.h>
 #include <vector>
 #include <cstring>
 
@@ -172,8 +173,72 @@ static void	init_std_streams_platform ()
 	_setmode(_fileno(stdout), _O_BINARY);
 }
 
-void create_protected_file (const char* path) // TODO
+void create_protected_file (const char* path)
 {
+	// Create the file with a security descriptor that grants access only
+	// to the current user (equivalent to Unix mode 0600).
+
+	// Get the current user's SID
+	HANDLE			token = INVALID_HANDLE_VALUE;
+	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+		throw System_error("OpenProcessToken", path, GetLastError());
+	}
+
+	DWORD			token_user_len = 0;
+	GetTokenInformation(token, TokenUser, nullptr, 0, &token_user_len);
+	if (token_user_len == 0) {
+		CloseHandle(token);
+		throw System_error("GetTokenInformation", path, GetLastError());
+	}
+
+	std::vector<char>	token_user_buf(token_user_len);
+	TOKEN_USER*		token_user = reinterpret_cast<TOKEN_USER*>(&token_user_buf[0]);
+	if (!GetTokenInformation(token, TokenUser, token_user, token_user_len, &token_user_len)) {
+		CloseHandle(token);
+		throw System_error("GetTokenInformation", path, GetLastError());
+	}
+	CloseHandle(token);
+
+	// Build an ACL that grants GENERIC_ALL only to the current user
+	EXPLICIT_ACCESSA	ea;
+	ZeroMemory(&ea, sizeof(ea));
+	ea.grfAccessPermissions = GENERIC_ALL;
+	ea.grfAccessMode = SET_ACCESS;
+	ea.grfInheritance = NO_INHERITANCE;
+	ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+	ea.Trustee.TrusteeType = TRUSTEE_IS_USER;
+	ea.Trustee.ptstrName = reinterpret_cast<LPSTR>(token_user->User.Sid);
+
+	PACL			acl = nullptr;
+	DWORD			acl_result = SetEntriesInAclA(1, &ea, nullptr, &acl);
+	if (acl_result != ERROR_SUCCESS) {
+		throw System_error("SetEntriesInAclA", path, acl_result);
+	}
+
+	// Build a security descriptor with this ACL
+	SECURITY_DESCRIPTOR	sd;
+	if (!InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION)) {
+		LocalFree(acl);
+		throw System_error("InitializeSecurityDescriptor", path, GetLastError());
+	}
+	if (!SetSecurityDescriptorDacl(&sd, TRUE, acl, FALSE)) {
+		LocalFree(acl);
+		throw System_error("SetSecurityDescriptorDacl", path, GetLastError());
+	}
+
+	SECURITY_ATTRIBUTES	sa;
+	sa.nLength = sizeof(sa);
+	sa.lpSecurityDescriptor = &sd;
+	sa.bInheritHandle = FALSE;
+
+	// Create the file with restrictive permissions
+	HANDLE			fh = CreateFileA(path, GENERIC_WRITE, 0, &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (fh == INVALID_HANDLE_VALUE) {
+		LocalFree(acl);
+		throw System_error("CreateFileA", path, GetLastError());
+	}
+	CloseHandle(fh);
+	LocalFree(acl);
 }
 
 int util_rename (const char* from, const char* to)
