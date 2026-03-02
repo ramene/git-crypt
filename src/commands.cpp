@@ -36,6 +36,7 @@
 #include "age.hpp"
 #include "shamir.hpp"
 #include "sops.hpp"
+#include "audit.hpp"
 #include "parse_options.hpp"
 #include "coprocess.hpp"
 #include <unistd.h>
@@ -1335,6 +1336,16 @@ int unlock (int argc, const char** argv)
 		return 1;
 	}
 
+	// 5. Audit log
+	{
+		std::string	id_type;
+		std::string	identity = audit_get_identity(id_type);
+		if (use_shares) {
+			id_type = "shamir";
+		}
+		audit_log_operation("unlock", identity, id_type, key_name_filter, encrypted_files);
+	}
+
 	return 0;
 }
 
@@ -1428,6 +1439,13 @@ int lock (int argc, const char** argv)
 		std::clog << "Error: 'git checkout' failed" << std::endl;
 		std::clog << "git-crypt has been locked up but existing decrypted files have not been encrypted" << std::endl;
 		return 1;
+	}
+
+	// 4. Audit log
+	{
+		std::string	id_type;
+		std::string	identity = audit_get_identity(id_type);
+		audit_log_operation("lock", identity, id_type, key_name, encrypted_files);
 	}
 
 	return 0;
@@ -2513,6 +2531,117 @@ int credentials_init (int argc, const char** argv)
 	std::cout << "All files in this directory are encrypted by git-crypt." << std::endl;
 
 	return 0;
+}
+
+void help_audit_log (std::ostream& out)
+{
+	//     |--------------------------------------------------------------------------------| 80 chars
+	out << "Usage: git-crypt audit-log [OPTIONS]" << std::endl;
+	out << std::endl;
+	out << "    -n, --limit N               Show only the last N entries" << std::endl;
+	out << "    --verify                    Also verify hash chain integrity" << std::endl;
+	out << std::endl;
+	out << "Display the cryptographic audit trail of decrypt/encrypt operations." << std::endl;
+}
+int audit_log (int argc, const char** argv)
+{
+	const char*	limit_str = 0;
+	bool		verify = false;
+	Options_list	options;
+	options.push_back(Option_def("-n", &limit_str));
+	options.push_back(Option_def("--limit", &limit_str));
+	options.push_back(Option_def("--verify", &verify));
+
+	parse_options(options, argc, argv);
+
+	std::vector<Audit_entry>	entries = audit_read_log();
+
+	if (entries.empty()) {
+		std::cout << "No audit log entries found." << std::endl;
+		std::cout << "Audit log location: " << audit_log_path() << std::endl;
+		return 0;
+	}
+
+	// Optional verification
+	if (verify) {
+		size_t	valid = audit_verify_chain(entries);
+		if (valid == entries.size()) {
+			std::cout << "Hash chain: VALID (" << valid << " entries)" << std::endl;
+		} else {
+			std::cout << "Hash chain: BROKEN at entry " << (valid + 1)
+				  << " of " << entries.size() << std::endl;
+		}
+		std::cout << std::endl;
+	}
+
+	// Apply limit
+	size_t	start = 0;
+	if (limit_str) {
+		char*		end = 0;
+		unsigned long	n = std::strtoul(limit_str, &end, 10);
+		if (end == limit_str || *end != '\0' || n == 0) {
+			std::clog << "Error: invalid limit: " << limit_str << std::endl;
+			return 2;
+		}
+		if (n < entries.size()) {
+			start = entries.size() - n;
+		}
+	}
+
+	// Display entries
+	for (size_t i = start; i < entries.size(); ++i) {
+		const Audit_entry&	e = entries[i];
+		std::cout << "[" << (i + 1) << "] " << e.timestamp << std::endl;
+		std::cout << "    Operation:  " << e.operation << std::endl;
+		std::cout << "    Identity:   " << e.identity << " (" << e.identity_type << ")" << std::endl;
+		std::cout << "    Key:        " << e.key_name << std::endl;
+		if (!e.files.empty()) {
+			std::cout << "    Files:      " << e.files.size() << std::endl;
+		}
+		std::cout << "    Hash:       " << e.entry_hash.substr(0, 16) << "..." << std::endl;
+		std::cout << std::endl;
+	}
+
+	std::cout << "Total: " << entries.size() << " entries" << std::endl;
+	return 0;
+}
+
+void help_verify_audit (std::ostream& out)
+{
+	//     |--------------------------------------------------------------------------------| 80 chars
+	out << "Usage: git-crypt verify-audit" << std::endl;
+	out << std::endl;
+	out << "Verify the integrity of the cryptographic audit trail hash chain." << std::endl;
+	out << "Returns exit code 0 if the chain is valid, 1 if tampered." << std::endl;
+}
+int verify_audit (int argc, const char** argv)
+{
+	parse_options(Options_list(), argc, argv);
+
+	std::vector<Audit_entry>	entries = audit_read_log();
+
+	if (entries.empty()) {
+		std::cout << "No audit log entries found." << std::endl;
+		return 0;
+	}
+
+	size_t	valid = audit_verify_chain(entries);
+
+	if (valid == entries.size()) {
+		std::cout << "Audit log hash chain: VALID" << std::endl;
+		std::cout << "Entries verified: " << valid << std::endl;
+		std::cout << "First entry:     " << entries.front().timestamp << std::endl;
+		std::cout << "Last entry:      " << entries.back().timestamp << std::endl;
+		return 0;
+	} else {
+		std::cout << "Audit log hash chain: BROKEN" << std::endl;
+		std::cout << "Valid entries:   " << valid << " of " << entries.size() << std::endl;
+		if (valid > 0) {
+			std::cout << "Last valid:      " << entries[valid - 1].timestamp << std::endl;
+		}
+		std::cout << "Tampered entry:  " << (valid + 1) << " (" << entries[valid].timestamp << ")" << std::endl;
+		return 1;
+	}
 }
 
 void help_keygen (std::ostream& out)

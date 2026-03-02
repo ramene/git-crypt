@@ -17,6 +17,7 @@ set(SOURCES
     src/age.cpp
     src/shamir.cpp
     src/sops.cpp
+    src/audit.cpp
     src/key.cpp
     src/util.cpp
     src/parse_options.cpp

@@ -60,7 +60,12 @@ int install_hooks (int argc, const char** argv);
 int verify_commits (int argc, const char** argv);
 int status (int argc, const char** argv);
 int add_age_recipient (int argc, const char** argv);
+int rm_age_recipient (int argc, const char** argv);
 int split_key (int argc, const char** argv);
+int sops_config (int argc, const char** argv);
+int credentials_init (int argc, const char** argv);
+int audit_log (int argc, const char** argv);
+int verify_audit (int argc, const char** argv);
 
 // Help messages:
 void help_init (std::ostream&);
@@ -78,7 +83,12 @@ void help_install_hooks (std::ostream&);
 void help_verify_commits (std::ostream&);
 void help_status (std::ostream&);
 void help_add_age_recipient (std::ostream&);
+void help_rm_age_recipient (std::ostream&);
 void help_split_key (std::ostream&);
+void help_sops_config (std::ostream&);
+void help_credentials_init (std::ostream&);
+void help_audit_log (std::ostream&);
+void help_verify_audit (std::ostream&);
 
 // other
 std::string get_git_config (const std::string& name);

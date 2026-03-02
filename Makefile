@@ -23,6 +23,7 @@ OBJFILES = \
     $(SRCDIR)/age.o \
     $(SRCDIR)/shamir.o \
     $(SRCDIR)/sops.o \
+    $(SRCDIR)/audit.o \
     $(SRCDIR)/key.o \
     $(SRCDIR)/util.o \
     $(SRCDIR)/parse_options.o \
