@@ -21,6 +21,7 @@ OBJFILES = \
     $(SRCDIR)/crypto.o \
     $(SRCDIR)/gpg.o \
     $(SRCDIR)/age.o \
+    $(SRCDIR)/shamir.o \
     $(SRCDIR)/key.o \
     $(SRCDIR)/util.o \
     $(SRCDIR)/parse_options.o \

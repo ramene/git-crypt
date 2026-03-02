@@ -60,6 +60,7 @@ int install_hooks (int argc, const char** argv);
 int verify_commits (int argc, const char** argv);
 int status (int argc, const char** argv);
 int add_age_recipient (int argc, const char** argv);
+int split_key (int argc, const char** argv);
 
 // Help messages:
 void help_init (std::ostream&);
@@ -77,6 +78,7 @@ void help_install_hooks (std::ostream&);
 void help_verify_commits (std::ostream&);
 void help_status (std::ostream&);
 void help_add_age_recipient (std::ostream&);
+void help_split_key (std::ostream&);
 
 // other
 std::string get_git_config (const std::string& name);
