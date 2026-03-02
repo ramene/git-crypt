@@ -648,7 +648,34 @@ static bool decrypt_repo_key (Key_file& key_file, const char* key_name, uint32_t
 	return false;
 }
 
-static bool decrypt_repo_keys (std::vector<Key_file>& key_files, uint32_t key_version, const std::vector<std::string>& secret_keys, const std::string& keys_path)
+static uint32_t get_latest_key_version (const std::string& key_dir_path)
+{
+	uint32_t			latest_version = 0;
+	bool				found = false;
+	std::vector<std::string>	version_dirents;
+
+	if (access(key_dir_path.c_str(), F_OK) == 0) {
+		version_dirents = get_directory_contents(key_dir_path.c_str());
+	}
+
+	for (std::vector<std::string>::const_iterator vd(version_dirents.begin()); vd != version_dirents.end(); ++vd) {
+		// Version directories are numeric
+		const char*	s = vd->c_str();
+		char*		end = 0;
+		unsigned long	v = std::strtoul(s, &end, 10);
+		if (end == s || *end != '\0') {
+			continue; // not a numeric directory name
+		}
+		if (!found || v > latest_version) {
+			latest_version = static_cast<uint32_t>(v);
+			found = true;
+		}
+	}
+
+	return latest_version;
+}
+
+static bool decrypt_repo_keys (std::vector<Key_file>& key_files, const std::vector<std::string>& secret_keys, const std::string& keys_path)
 {
 	bool				successful = false;
 	std::vector<std::string>	dirents;
@@ -665,6 +692,9 @@ static bool decrypt_repo_keys (std::vector<Key_file>& key_files, uint32_t key_ve
 			}
 			key_name = dirent->c_str();
 		}
+
+		std::string		key_dir_path(keys_path + "/" + *dirent);
+		uint32_t		key_version = get_latest_key_version(key_dir_path);
 
 		Key_file	key_file;
 		if (decrypt_repo_key(key_file, key_name, key_version, secret_keys, keys_path)) {
@@ -1064,10 +1094,9 @@ int unlock (int argc, const char** argv)
 		std::string			repo_keys_path(get_repo_keys_path());
 		std::vector<std::string>	gpg_secret_keys(gpg_list_secret_keys());
 		// TODO: command-line option to specify the precise secret key to use
-		// TODO: don't hard code key version 0 here - instead, determine the most recent version and try to decrypt that, or decrypt all versions if command-line option specified
 		// TODO: command line option to only unlock specific key instead of all of them
 		// TODO: avoid decrypting repo keys which are already unlocked in the .git directory
-		if (!decrypt_repo_keys(key_files, 0, gpg_secret_keys, repo_keys_path)) {
+		if (!decrypt_repo_keys(key_files, gpg_secret_keys, repo_keys_path)) {
 			std::clog << "Error: no GPG secret key available to unlock this repository." << std::endl;
 			std::clog << "To unlock with a shared symmetric key instead, specify the path to the symmetric key as an argument to 'git-crypt unlock'." << std::endl;
 			// TODO std::clog << "To see a list of GPG keys authorized to unlock this repository, run 'git-crypt ls-gpg-users'." << std::endl;
@@ -1329,35 +1358,214 @@ void help_rm_gpg_user (std::ostream& out)
 	out << "    -n, --no-commit             Don't automatically commit" << std::endl;
 	out << std::endl;
 }
-int rm_gpg_user (int argc, const char** argv) // TODO
+int rm_gpg_user (int argc, const char** argv)
 {
-	std::clog << "Error: rm-gpg-user is not yet implemented." << std::endl;
-	return 1;
+	const char*		key_name = 0;
+	bool			no_commit = false;
+	Options_list		options;
+	options.push_back(Option_def("-k", &key_name));
+	options.push_back(Option_def("--key-name", &key_name));
+	options.push_back(Option_def("-n", &no_commit));
+	options.push_back(Option_def("--no-commit", &no_commit));
+
+	int			argi = parse_options(options, argc, argv);
+	if (argc - argi == 0) {
+		std::clog << "Error: no GPG user ID specified" << std::endl;
+		help_rm_gpg_user(std::clog);
+		return 2;
+	}
+
+	if (key_name) {
+		validate_key_name_or_throw(key_name);
+	}
+
+	// Resolve each user ID to a fingerprint
+	std::vector<std::string>	fingerprints;
+	for (int i = argi; i < argc; ++i) {
+		std::vector<std::string>	keys(gpg_lookup_key(argv[i]));
+		if (keys.empty()) {
+			std::clog << "Error: public key for '" << argv[i] << "' not found in your GPG keyring" << std::endl;
+			return 1;
+		}
+		if (keys.size() > 1) {
+			std::clog << "Error: more than one public key matches '" << argv[i] << "' - please be more specific" << std::endl;
+			return 1;
+		}
+		fingerprints.push_back(keys[0]);
+	}
+
+	const std::string		repo_keys_path(get_repo_keys_path());
+	const std::string		key_dir_name(key_name ? key_name : "default");
+	const std::string		key_path(repo_keys_path + "/" + key_dir_name);
+
+	if (access(key_path.c_str(), F_OK) != 0) {
+		std::clog << "Error: key directory not found: " << key_path << std::endl;
+		return 1;
+	}
+
+	// Iterate over version subdirectories under the key directory
+	std::vector<std::string>	version_dirs(get_directory_contents(key_path.c_str()));
+	std::vector<std::string>	removed_files;
+
+	for (std::vector<std::string>::const_iterator fingerprint(fingerprints.begin()); fingerprint != fingerprints.end(); ++fingerprint) {
+		bool	found = false;
+		for (std::vector<std::string>::const_iterator version_dir(version_dirs.begin()); version_dir != version_dirs.end(); ++version_dir) {
+			const std::string	gpg_file(key_path + "/" + *version_dir + "/" + *fingerprint + ".gpg");
+			if (access(gpg_file.c_str(), F_OK) == 0) {
+				found = true;
+				removed_files.push_back(gpg_file);
+			}
+		}
+
+		if (!found) {
+			std::clog << "Error: GPG user " << *fingerprint << " not found";
+			if (key_name) {
+				std::clog << " in key '" << key_name << "'";
+			}
+			std::clog << std::endl;
+			return 1;
+		}
+	}
+
+	// Stage removals with git rm
+	{
+		std::vector<std::string>	command;
+		command.push_back("git");
+		command.push_back("rm");
+		command.push_back("--quiet");
+		command.push_back("--");
+		command.insert(command.end(), removed_files.begin(), removed_files.end());
+		if (!successful_exit(exec_command(command))) {
+			std::clog << "Error: 'git rm' failed" << std::endl;
+			return 1;
+		}
+	}
+
+	// Commit unless --no-commit
+	if (!no_commit) {
+		std::ostringstream	commit_message_builder;
+		commit_message_builder << "Remove " << fingerprints.size() << " git-crypt collaborator" << (fingerprints.size() != 1 ? "s" : "") << "\n\nRemoved collaborators:\n\n";
+		for (std::vector<std::string>::const_iterator fp(fingerprints.begin()); fp != fingerprints.end(); ++fp) {
+			commit_message_builder << "    " << *fp << '\n';
+			const std::string uid(gpg_get_uid(*fp));
+			if (!uid.empty()) {
+				commit_message_builder << "        " << uid << '\n';
+			}
+		}
+
+		std::vector<std::string>	command;
+		command.push_back("git");
+		command.push_back("commit");
+		command.push_back("-m");
+		command.push_back(commit_message_builder.str());
+		command.push_back("--");
+		command.insert(command.end(), removed_files.begin(), removed_files.end());
+
+		if (!successful_exit(exec_command(command))) {
+			std::clog << "Error: 'git commit' failed" << std::endl;
+			return 1;
+		}
+	}
+
+	return 0;
 }
 
 void help_ls_gpg_users (std::ostream& out)
 {
 	//     |--------------------------------------------------------------------------------| 80 chars
-	out << "Usage: git-crypt ls-gpg-users" << std::endl;
+	out << "Usage: git-crypt ls-gpg-users [OPTIONS]" << std::endl;
+	out << std::endl;
+	out << "    -k, --key-name KEYNAME      List users for given key, instead of all keys" << std::endl;
+	out << std::endl;
 }
-int ls_gpg_users (int argc, const char** argv) // TODO
+int ls_gpg_users (int argc, const char** argv)
 {
-	// Sketch:
-	// Scan the sub-directories in .git-crypt/keys, outputting something like this:
-	// ====
-	// Key version 0:
-	//  0x143DE9B3F7316900 Andrew Ayer <andrew@example.com>
-	//  0x4E386D9C9C61702F ???
-	// Key version 1:
-	//  0x143DE9B3F7316900 Andrew Ayer <andrew@example.com>
-	//  0x1727274463D27F40 John Smith <smith@example.com>
-	//  0x4E386D9C9C61702F ???
-	// ====
-	// To resolve a long hex ID, use a command like this:
-	//  gpg --options /dev/null --fixed-list-mode --batch --with-colons --list-keys 0x143DE9B3F7316900
+	const char*		key_name = 0;
+	Options_list		options;
+	options.push_back(Option_def("-k", &key_name));
+	options.push_back(Option_def("--key-name", &key_name));
 
-	std::clog << "Error: ls-gpg-users is not yet implemented." << std::endl;
-	return 1;
+	int			argi = parse_options(options, argc, argv);
+
+	if (argc - argi != 0) {
+		std::clog << "Error: git-crypt ls-gpg-users takes no arguments" << std::endl;
+		help_ls_gpg_users(std::clog);
+		return 2;
+	}
+
+	if (key_name) {
+		validate_key_name_or_throw(key_name);
+	}
+
+	const std::string		repo_keys_path(get_repo_keys_path());
+
+	if (access(repo_keys_path.c_str(), F_OK) != 0) {
+		std::clog << "Error: no keys found - has git-crypt been set up in this repository?" << std::endl;
+		return 1;
+	}
+
+	// Get list of key names (directory entries under keys/)
+	std::vector<std::string>	key_names(get_directory_contents(repo_keys_path.c_str()));
+
+	for (std::vector<std::string>::const_iterator kn(key_names.begin()); kn != key_names.end(); ++kn) {
+		// If filtering by key name, skip non-matching entries
+		if (key_name) {
+			const std::string	target(key_name);
+			if (*kn != target) {
+				continue;
+			}
+		} else if (*kn != "default" && !validate_key_name(kn->c_str())) {
+			continue;
+		}
+
+		const std::string	key_dir(repo_keys_path + "/" + *kn);
+
+		// Get version subdirectories
+		std::vector<std::string>	version_dirs(get_directory_contents(key_dir.c_str()));
+
+		// Collect unique fingerprints across all versions
+		std::vector<std::string>	unique_fingerprints;
+		for (std::vector<std::string>::const_iterator vd(version_dirs.begin()); vd != version_dirs.end(); ++vd) {
+			const std::string	version_path(key_dir + "/" + *vd);
+			std::vector<std::string>	entries;
+			try {
+				entries = get_directory_contents(version_path.c_str());
+			} catch (const System_error&) {
+				continue;
+			}
+			for (std::vector<std::string>::const_iterator entry(entries.begin()); entry != entries.end(); ++entry) {
+				// Only process .gpg files
+				if (entry->size() > 4 && entry->substr(entry->size() - 4) == ".gpg") {
+					const std::string	fingerprint(entry->substr(0, entry->size() - 4));
+					// Check if already collected
+					bool	already_listed = false;
+					for (std::vector<std::string>::const_iterator fp(unique_fingerprints.begin()); fp != unique_fingerprints.end(); ++fp) {
+						if (*fp == fingerprint) {
+							already_listed = true;
+							break;
+						}
+					}
+					if (!already_listed) {
+						unique_fingerprints.push_back(fingerprint);
+					}
+				}
+			}
+		}
+
+		if (!unique_fingerprints.empty()) {
+			std::cout << (*kn == "default" ? "default" : kn->c_str()) << ":" << std::endl;
+			for (std::vector<std::string>::const_iterator fp(unique_fingerprints.begin()); fp != unique_fingerprints.end(); ++fp) {
+				std::cout << "  0x" << *fp;
+				const std::string	uid(gpg_get_uid(*fp));
+				if (!uid.empty()) {
+					std::cout << " " << uid;
+				}
+				std::cout << std::endl;
+			}
+		}
+	}
+
+	return 0;
 }
 
 void help_export_key (std::ostream& out)
@@ -1489,12 +1697,68 @@ int migrate_key (int argc, const char** argv)
 void help_refresh (std::ostream& out)
 {
 	//     |--------------------------------------------------------------------------------| 80 chars
-	out << "Usage: git-crypt refresh" << std::endl;
+	out << "Usage: git-crypt refresh [OPTIONS]" << std::endl;
+	out << std::endl;
+	out << "    -a, --all                Refresh all keys, instead of just the default" << std::endl;
+	out << "    -k, --key-name KEYNAME   Refresh the given key, instead of the default" << std::endl;
+	out << std::endl;
 }
-int refresh (int argc, const char** argv) // TODO: do a force checkout, much like in unlock
+int refresh (int argc, const char** argv)
 {
-	std::clog << "Error: refresh is not yet implemented." << std::endl;
-	return 1;
+	const char*	key_name = 0;
+	bool		all_keys = false;
+	Options_list	options;
+	options.push_back(Option_def("-k", &key_name));
+	options.push_back(Option_def("--key-name", &key_name));
+	options.push_back(Option_def("-a", &all_keys));
+	options.push_back(Option_def("--all", &all_keys));
+
+	int		argi = parse_options(options, argc, argv);
+
+	if (argc - argi != 0) {
+		std::clog << "Error: git-crypt refresh takes no arguments" << std::endl;
+		help_refresh(std::clog);
+		return 2;
+	}
+
+	if (all_keys && key_name) {
+		std::clog << "Error: -k and --all options are mutually exclusive" << std::endl;
+		return 2;
+	}
+
+	if (key_name) {
+		validate_key_name_or_throw(key_name);
+	}
+
+	// Collect encrypted files
+	std::vector<std::string>	encrypted_files;
+	if (all_keys) {
+		std::vector<std::string>	dirents(get_directory_contents(get_internal_keys_path().c_str()));
+		for (std::vector<std::string>::const_iterator dirent(dirents.begin()); dirent != dirents.end(); ++dirent) {
+			const char*	this_key_name = (*dirent == "default" ? 0 : dirent->c_str());
+			get_encrypted_files(encrypted_files, this_key_name);
+		}
+	} else {
+		get_encrypted_files(encrypted_files, key_name);
+	}
+
+	if (encrypted_files.empty()) {
+		std::clog << "No encrypted files found." << std::endl;
+		return 0;
+	}
+
+	// Touch every file so git checkout will re-apply the smudge filter
+	for (std::vector<std::string>::const_iterator file(encrypted_files.begin()); file != encrypted_files.end(); ++file) {
+		touch_file(*file);
+	}
+
+	if (!git_checkout(encrypted_files)) {
+		std::clog << "Error: 'git checkout' failed" << std::endl;
+		return 1;
+	}
+
+	std::clog << encrypted_files.size() << " file" << (encrypted_files.size() != 1 ? "s" : "") << " refreshed." << std::endl;
+	return 0;
 }
 
 void help_status (std::ostream& out)
