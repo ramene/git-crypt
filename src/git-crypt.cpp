@@ -67,6 +67,7 @@ static void print_usage (std::ostream& out)
 	out << std::endl;
 	out << "SOPS integration:" << std::endl;
 	out << "  sops-config              generate .sops.yaml for structured file encryption" << std::endl;
+	out << "  credentials-init         create .credentials/ directory with encryption setup" << std::endl;
 	out << std::endl;
 	out << "Symmetric key commands:" << std::endl;
 	out << "  export-key FILE      export this repo's symmetric key to the given file" << std::endl;
@@ -132,6 +133,8 @@ static bool help_for_command (const char* command, std::ostream& out)
 		help_split_key(out);
 	} else if (std::strcmp(command, "sops-config") == 0) {
 		help_sops_config(out);
+	} else if (std::strcmp(command, "credentials-init") == 0) {
+		help_credentials_init(out);
 	} else {
 		return false;
 	}
@@ -266,6 +269,9 @@ try {
 		}
 		if (std::strcmp(command, "sops-config") == 0) {
 			return sops_config(argc, argv);
+		}
+		if (std::strcmp(command, "credentials-init") == 0) {
+			return credentials_init(argc, argv);
 		}
 		// Plumbing commands (executed by git, not by user):
 		if (std::strcmp(command, "clean") == 0) {

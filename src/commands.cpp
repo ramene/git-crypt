@@ -2364,6 +2364,157 @@ int sops_config (int argc, const char** argv)
 	return 0;
 }
 
+void help_credentials_init (std::ostream& out)
+{
+	//     |--------------------------------------------------------------------------------| 80 chars
+	out << "Usage: git-crypt credentials-init [OPTIONS]" << std::endl;
+	out << std::endl;
+	out << "    --sops                      Also create .sops.yaml in .credentials/" << std::endl;
+	out << std::endl;
+	out << "Create a .credentials/ directory with pre-configured .gitattributes for" << std::endl;
+	out << "git-crypt encryption, template files for common credential types, and" << std::endl;
+	out << "optional SOPS integration for structured secrets." << std::endl;
+}
+int credentials_init (int argc, const char** argv)
+{
+	bool		setup_sops = false;
+	Options_list	options;
+	options.push_back(Option_def("--sops", &setup_sops));
+
+	parse_options(options, argc, argv);
+
+	// Create .credentials/ directory
+	std::string	cred_dir = ".credentials";
+	if (access(cred_dir.c_str(), F_OK) == 0) {
+		std::clog << "Warning: .credentials/ directory already exists" << std::endl;
+	}
+
+	// Use mkdir -p via mkdir_parent on a child path, then create the dir itself
+	std::string	marker_path = cred_dir + "/.gitattributes";
+	mkdir_parent(marker_path);
+	// mkdir_parent creates parents but not the last component — we need the dir itself
+	mkdir(cred_dir.c_str(), 0700);
+
+	// 1. Write .credentials/.gitattributes
+	{
+		std::ofstream	out(marker_path);
+		if (!out) {
+			std::clog << "Error: unable to write " << marker_path << std::endl;
+			return 1;
+		}
+		out << "# git-crypt: encrypt all files in .credentials/" << std::endl;
+		out << "* filter=git-crypt diff=git-crypt" << std::endl;
+		out << ".gitattributes !filter !diff" << std::endl;
+		out << "README.md !filter !diff" << std::endl;
+		if (setup_sops) {
+			out << ".sops.yaml !filter !diff" << std::endl;
+		}
+		out.close();
+		if (!out.good()) {
+			std::clog << "Error: failed to write " << marker_path << std::endl;
+			return 1;
+		}
+	}
+	std::cout << "Created " << marker_path << std::endl;
+
+	// 2. Write .credentials/README.md
+	{
+		std::string	readme_path = cred_dir + "/README.md";
+		std::ofstream	out(readme_path);
+		if (out) {
+			out << "# Credentials Directory" << std::endl;
+			out << std::endl;
+			out << "This directory is encrypted by git-crypt.  All files (except this" << std::endl;
+			out << "README and .gitattributes) are transparently encrypted when pushed" << std::endl;
+			out << "and decrypted when pulled." << std::endl;
+			out << std::endl;
+			out << "## Setup" << std::endl;
+			out << std::endl;
+			out << "1. Run `git-crypt unlock` to decrypt (requires authorized GPG/age key)" << std::endl;
+			out << "2. Add secrets to the appropriate file below" << std::endl;
+			out << "3. Commit and push — encryption happens automatically" << std::endl;
+			out << std::endl;
+			out << "## File Organization" << std::endl;
+			out << std::endl;
+			out << "- `env.production` — Production environment variables" << std::endl;
+			out << "- `env.staging` — Staging environment variables" << std::endl;
+			out << "- `api-keys.env` — API keys and tokens" << std::endl;
+			out << "- `certificates/` — TLS/SSL certificates and private keys" << std::endl;
+			out.close();
+		}
+		std::cout << "Created " << readme_path << std::endl;
+	}
+
+	// 3. Write template files
+	{
+		std::string	env_prod = cred_dir + "/env.production";
+		std::ofstream	out(env_prod);
+		if (out) {
+			out << "# Production environment variables" << std::endl;
+			out << "# This file is encrypted by git-crypt" << std::endl;
+			out << std::endl;
+			out << "# DATABASE_URL=postgresql://user:password@host:5432/dbname" << std::endl;
+			out << "# API_SECRET_KEY=your-secret-key-here" << std::endl;
+			out << "# AWS_ACCESS_KEY_ID=AKIA..." << std::endl;
+			out << "# AWS_SECRET_ACCESS_KEY=..." << std::endl;
+			out.close();
+		}
+		std::cout << "Created " << env_prod << std::endl;
+	}
+	{
+		std::string	env_staging = cred_dir + "/env.staging";
+		std::ofstream	out(env_staging);
+		if (out) {
+			out << "# Staging environment variables" << std::endl;
+			out << "# This file is encrypted by git-crypt" << std::endl;
+			out << std::endl;
+			out.close();
+		}
+		std::cout << "Created " << env_staging << std::endl;
+	}
+	{
+		std::string	api_keys = cred_dir + "/api-keys.env";
+		std::ofstream	out(api_keys);
+		if (out) {
+			out << "# API keys and tokens" << std::endl;
+			out << "# This file is encrypted by git-crypt" << std::endl;
+			out << std::endl;
+			out.close();
+		}
+		std::cout << "Created " << api_keys << std::endl;
+	}
+
+	// 4. Create certificates subdirectory
+	{
+		std::string	cert_dir = cred_dir + "/certificates";
+		mkdir(cert_dir.c_str(), 0700);
+		std::string	cert_readme = cert_dir + "/.gitkeep";
+		std::ofstream	out(cert_readme);
+		if (out) {
+			out.close();
+		}
+		std::cout << "Created " << cert_dir << "/" << std::endl;
+	}
+
+	// 5. Optionally set up SOPS
+	if (setup_sops) {
+		std::vector<std::string>	recipients = sops_collect_age_recipients(0);
+		std::vector<std::string>	patterns;
+		patterns.push_back("secrets\\.ya?ml$");
+		patterns.push_back("secrets\\.json$");
+		std::string	sops_path = cred_dir + "/.sops.yaml";
+		if (sops_generate_config(sops_path, recipients, patterns)) {
+			std::cout << "Created " << sops_path << std::endl;
+		}
+	}
+
+	std::cout << std::endl;
+	std::cout << "Credentials directory initialized at .credentials/" << std::endl;
+	std::cout << "All files in this directory are encrypted by git-crypt." << std::endl;
+
+	return 0;
+}
+
 void help_keygen (std::ostream& out)
 {
 	//     |--------------------------------------------------------------------------------| 80 chars
