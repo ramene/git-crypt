@@ -27,6 +27,12 @@ OBJFILES = \
 OBJFILES += crypto-openssl-11.o
 LDFLAGS += -lcrypto
 
+# Object files needed by tests (shared library code, excluding git-crypt main)
+TEST_LIB_OBJS = crypto.o crypto-openssl-11.o key.o util.o coprocess.o fhstream.o
+TEST_SRCDIR = tests
+TEST_OBJS = $(TEST_SRCDIR)/test_main.o $(TEST_SRCDIR)/test_crypto.o $(TEST_SRCDIR)/test_key.o
+TEST_RUNNER = $(TEST_SRCDIR)/test_runner
+
 XSLTPROC ?= xsltproc
 DOCBOOK_FLAGS += --param man.output.in.separate.dir 1 \
 		 --stringparam man.output.base.dir man/ \
@@ -67,7 +73,7 @@ CLEAN_TARGETS := clean-bin $(CLEAN_MAN_TARGETS-$(ENABLE_MAN))
 clean: $(CLEAN_TARGETS)
 
 clean-bin:
-	rm -f $(OBJFILES) git-crypt
+	rm -f $(OBJFILES) git-crypt $(TEST_OBJS) $(TEST_RUNNER)
 
 clean-man:
 	rm -f man/man1/git-crypt.1
@@ -89,7 +95,20 @@ install-man: build-man
 	install -d $(DESTDIR)$(MANDIR)/man1
 	install -m 644 man/man1/git-crypt.1 $(DESTDIR)$(MANDIR)/man1/
 
+#
+# Test
+#
+$(TEST_SRCDIR)/%.o: $(TEST_SRCDIR)/%.cpp
+	$(CXX) $(CXXFLAGS) -I. -I$(TEST_SRCDIR) -c -o $@ $<
+
+$(TEST_RUNNER): $(TEST_OBJS) $(TEST_LIB_OBJS)
+	$(CXX) $(CXXFLAGS) -o $@ $(TEST_OBJS) $(TEST_LIB_OBJS) $(LDFLAGS)
+
+test: $(TEST_RUNNER)
+	./$(TEST_RUNNER)
+
 .PHONY: all \
 	build build-bin build-man \
 	clean clean-bin clean-man \
-	install install-bin install-man
+	install install-bin install-man \
+	test
