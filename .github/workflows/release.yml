@@ -13,6 +13,7 @@ jobs:
     name: Build ${{ matrix.os }}-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: linux
@@ -41,8 +42,14 @@ jobs:
         run: |
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           sudo dpkg --add-architecture arm64
-          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe" | sudo tee /etc/apt/sources.list.d/arm64.list
+          # Add all jammy suites for arm64 (base + updates + security)
+          cat << 'SOURCES' | sudo tee /etc/apt/sources.list.d/arm64.list
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe
+          SOURCES
+          # Pin amd64 sources so they don't pull arm64
+          sudo sed -i 's/^deb http/deb [arch=amd64] http/' /etc/apt/sources.list
           sudo apt-get update
           sudo apt-get install -y libssl-dev:arm64
 
@@ -52,14 +59,14 @@ jobs:
 
       - name: Build (Linux x86_64)
         if: matrix.os == 'linux' && matrix.arch == 'x86_64'
-        run: make LDFLAGS="-lcrypto -static"
+        run: make LDFLAGS="-lcrypto"
 
       - name: Build (Linux arm64)
         if: matrix.os == 'linux' && matrix.arch == 'arm64'
         run: |
           make CXX=aarch64-linux-gnu-g++ \
-               CXXFLAGS="-Wall -pedantic -Wno-long-long -O2 -std=c++11 -I/usr/include/aarch64-linux-gnu" \
-               LDFLAGS="-L/usr/lib/aarch64-linux-gnu -lcrypto -static"
+               CXXFLAGS="-Wall -pedantic -Wno-long-long -O2 -std=c++11 -I/usr/aarch64-linux-gnu/include" \
+               LDFLAGS="-L/usr/lib/aarch64-linux-gnu -lcrypto"
 
       - name: Build (macOS)
         if: runner.os == 'macOS'
