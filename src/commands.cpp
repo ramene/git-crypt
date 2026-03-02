@@ -38,6 +38,9 @@
 #include "sops.hpp"
 #include "audit.hpp"
 #include "wallet.hpp"
+#include "ssh_signing.hpp"
+#include "policy.hpp"
+#include "proposal.hpp"
 #include "parse_options.hpp"
 #include "coprocess.hpp"
 #include <unistd.h>
@@ -57,6 +60,9 @@
 #include <exception>
 #include <vector>
 #include <set>
+
+// Forward declaration for multi-party access control
+static int policy_gate (const std::string& operation);
 
 enum {
 	// # of arguments per git checkout call; must be large enough to be efficient but small
@@ -1160,6 +1166,7 @@ void help_unlock (std::ostream& out)
 	out << "    -k, --key-name KEYNAME   Unlock only the given key, instead of all keys" << std::endl;
 	out << "    --shares FILE ...        Reconstruct key from Shamir share files" << std::endl;
 	out << "    --wallet ADDRESS         Unlock using wallet-derived identity" << std::endl;
+	out << "    --agent NAME             Unlock as agent (scoped to agent's key list)" << std::endl;
 	out << std::endl;
 }
 int unlock (int argc, const char** argv)
@@ -1167,13 +1174,41 @@ int unlock (int argc, const char** argv)
 	const char*	key_name_filter = 0;
 	bool		use_shares = false;
 	const char*	wallet_address = 0;
+	const char*	agent_name = 0;
 	Options_list	options;
 	options.push_back(Option_def("-k", &key_name_filter));
 	options.push_back(Option_def("--key-name", &key_name_filter));
 	options.push_back(Option_def("--shares", &use_shares));
 	options.push_back(Option_def("--wallet", &wallet_address));
+	options.push_back(Option_def("--agent", &agent_name));
 
 	int		argi = parse_options(options, argc, argv);
+
+	// Agent mode: restrict to agent's key scopes from policy
+	if (agent_name) {
+		if (!policy_exists()) {
+			std::clog << "Error: --agent requires a policy. Run: git-crypt policy-init" << std::endl;
+			return 1;
+		}
+		Policy	policy = policy_load();
+		bool	found = false;
+		for (size_t i = 0; i < policy.agents.size(); ++i) {
+			if (policy.agents[i].name == std::string(agent_name)) {
+				found = true;
+				// If agent has key_scopes and no explicit key_name_filter,
+				// only decrypt keys in the agent's scope
+				if (!key_name_filter && !policy.agents[i].key_scopes.empty()) {
+					// Use first scope as filter (agents typically have narrow scope)
+					key_name_filter = policy.agents[i].key_scopes[0].c_str();
+				}
+				break;
+			}
+		}
+		if (!found) {
+			std::clog << "Error: agent '" << agent_name << "' not found in policy." << std::endl;
+			return 1;
+		}
+	}
 
 	if (key_name_filter) {
 		validate_key_name_or_throw(key_name_filter);
@@ -1442,6 +1477,10 @@ int unlock (int argc, const char** argv)
 		if (use_shares) {
 			id_type = "shamir";
 		}
+		if (agent_name) {
+			id_type = "agent";
+			identity = std::string(agent_name);
+		}
 		audit_log_operation("unlock", identity, id_type, key_name_filter, encrypted_files);
 	}
 
@@ -1563,6 +1602,7 @@ void help_add_gpg_user (std::ostream& out)
 }
 int add_gpg_user (int argc, const char** argv)
 {
+	{ int g = policy_gate("add-gpg-user"); if (g) return g; }
 	const char*		key_name = 0;
 	bool			no_commit = false;
 	bool			trusted = false;
@@ -1716,6 +1756,7 @@ void help_add_age_recipient (std::ostream& out)
 }
 int add_age_recipient (int argc, const char** argv)
 {
+	{ int g = policy_gate("add-age-recipient"); if (g) return g; }
 	const char*		key_name = 0;
 	bool			no_commit = false;
 	bool			ssh_mode = false;
@@ -1918,6 +1959,7 @@ void help_rm_age_recipient (std::ostream& out)
 }
 int rm_age_recipient (int argc, const char** argv)
 {
+	{ int g = policy_gate("rm-age-recipient"); if (g) return g; }
 	const char*		key_name = 0;
 	bool			no_commit = false;
 	Options_list		options;
@@ -2040,6 +2082,7 @@ void help_add_wallet_recipient (std::ostream& out)
 }
 int add_wallet_recipient (int argc, const char** argv)
 {
+	{ int g = policy_gate("add-wallet-recipient"); if (g) return g; }
 	const char*		key_name = 0;
 	bool			no_commit = false;
 	Options_list		options;
@@ -2239,6 +2282,7 @@ void help_rm_gpg_user (std::ostream& out)
 }
 int rm_gpg_user (int argc, const char** argv)
 {
+	{ int g = policy_gate("rm-gpg-user"); if (g) return g; }
 	const char*		key_name = 0;
 	bool			no_commit = false;
 	Options_list		options;
@@ -3245,6 +3289,7 @@ void help_rotate_key (std::ostream& out)
 }
 int rotate_key (int argc, const char** argv)
 {
+	{ int g = policy_gate("rotate-key"); if (g) return g; }
 	const char*	key_name = 0;
 	bool		no_commit = false;
 	Options_list	options;
@@ -3977,3 +4022,521 @@ int status (int argc, const char** argv)
 	return exit_status;
 }
 
+// Multi-party access control: policy gate
+// Checks if an operation requires multi-party approval.
+// If no policy exists, returns silently (backward compatible).
+// If quorum > 1, prints guidance and exits with code 1.
+static int policy_gate (const std::string& operation)
+{
+	if (!policy_exists()) {
+		return 0;
+	}
+	Policy	policy = policy_load();
+	int	quorum = policy_quorum_for(policy, operation);
+	if (quorum > 1) {
+		std::cerr << "This operation requires a multi-party proposal." << std::endl;
+		std::cerr << "Use: git-crypt propose " << operation << " [args]" << std::endl;
+		return 1;
+	}
+	return 0;
+}
+
+// --- Multi-party ACL help functions ---
+
+void help_policy_init (std::ostream& out)
+{
+	//     |--------------------------------------------------------------------------------| 80 chars
+	out << "Usage: git-crypt policy-init [OPTIONS]" << std::endl;
+	out << std::endl;
+	out << "    --quorum N                  Default quorum for privileged operations (default: 2)" << std::endl;
+	out << std::endl;
+	out << "Initialize multi-party access control policy. The caller's SSH signing key" << std::endl;
+	out << "(from git config user.signingkey) is registered as the first owner." << std::endl;
+}
+
+void help_propose (std::ostream& out)
+{
+	//     |--------------------------------------------------------------------------------| 80 chars
+	out << "Usage: git-crypt propose OPERATION [ARGS ...]" << std::endl;
+	out << std::endl;
+	out << "Create a proposal for a privileged operation requiring multi-party approval." << std::endl;
+	out << "The proposal is automatically signed by the proposer." << std::endl;
+	out << std::endl;
+	out << "Operations: add-gpg-user, rm-gpg-user, add-age-recipient, rm-age-recipient," << std::endl;
+	out << "            add-wallet-recipient, rotate-key" << std::endl;
+}
+
+void help_approve (std::ostream& out)
+{
+	//     |--------------------------------------------------------------------------------| 80 chars
+	out << "Usage: git-crypt approve PROPOSAL_ID" << std::endl;
+	out << std::endl;
+	out << "Approve a pending proposal by signing it with your SSH key." << std::endl;
+}
+
+void help_execute_proposal (std::ostream& out)
+{
+	//     |--------------------------------------------------------------------------------| 80 chars
+	out << "Usage: git-crypt execute PROPOSAL_ID" << std::endl;
+	out << std::endl;
+	out << "Execute an approved proposal that has met its quorum requirement." << std::endl;
+}
+
+void help_proposals_list (std::ostream& out)
+{
+	//     |--------------------------------------------------------------------------------| 80 chars
+	out << "Usage: git-crypt proposals [OPTIONS]" << std::endl;
+	out << std::endl;
+	out << "    --all                       Show all proposals (including executed/rejected)" << std::endl;
+	out << std::endl;
+	out << "List pending proposals." << std::endl;
+}
+
+void help_policy_show (std::ostream& out)
+{
+	//     |--------------------------------------------------------------------------------| 80 chars
+	out << "Usage: git-crypt policy-show" << std::endl;
+	out << std::endl;
+	out << "Display the current multi-party access control policy." << std::endl;
+}
+
+// --- Multi-party ACL command implementations ---
+
+int policy_init (int argc, const char** argv)
+{
+	int		default_quorum = 2;
+	const char*	quorum_str = 0;
+	Options_list	options;
+	options.push_back(Option_def("--quorum", &quorum_str));
+
+	parse_options(options, argc, argv);
+
+	if (quorum_str) {
+		char*	end = 0;
+		default_quorum = static_cast<int>(std::strtol(quorum_str, &end, 10));
+		if (end == quorum_str || *end != '\0' || default_quorum < 1) {
+			std::cerr << "Error: invalid quorum value: " << quorum_str << std::endl;
+			return 2;
+		}
+	}
+
+	if (policy_exists()) {
+		std::cerr << "Error: policy already initialized. See: git-crypt policy-show" << std::endl;
+		return 1;
+	}
+
+	// Get caller's SSH signing key
+	std::string	key_path;
+	try {
+		key_path = ssh_get_signing_key_path();
+	} catch (...) {
+		std::cerr << "Error: no SSH signing key configured." << std::endl;
+		std::cerr << "Set one with: git config user.signingkey /path/to/ssh/key" << std::endl;
+		return 1;
+	}
+
+	std::string	fingerprint = ssh_key_fingerprint(key_path);
+
+	std::string	user_name;
+	try {
+		user_name = get_git_config("user.name");
+	} catch (...) {
+		user_name = "unknown";
+	}
+
+	Policy	policy;
+	Policy_owner	owner;
+	owner.fingerprint = fingerprint;
+	owner.name = user_name;
+	policy.owners.push_back(owner);
+
+	const char*	gated_ops[] = {
+		"add-gpg-user", "rm-gpg-user",
+		"add-age-recipient", "rm-age-recipient",
+		"add-wallet-recipient", "rotate-key",
+		0
+	};
+	for (int i = 0; gated_ops[i]; ++i) {
+		Policy_quorum	q;
+		q.operation = gated_ops[i];
+		q.required = default_quorum;
+		policy.quorums.push_back(q);
+	}
+
+	policy_save(policy);
+
+	// Audit log
+	{
+		std::string	id_type = "ssh";
+		std::vector<std::string>	files;
+		files.push_back(policy_path());
+		audit_log_operation("policy-init", fingerprint, id_type, 0, files);
+	}
+
+	std::cout << "Policy initialized." << std::endl;
+	std::cout << "Owner: " << user_name << " (" << fingerprint << ")" << std::endl;
+	std::cout << "Default quorum: " << default_quorum << std::endl;
+	std::cout << "Policy file: " << policy_path() << std::endl;
+
+	return 0;
+}
+
+int propose (int argc, const char** argv)
+{
+	bool		no_commit = false;
+	Options_list	options;
+	options.push_back(Option_def("-n", &no_commit));
+	options.push_back(Option_def("--no-commit", &no_commit));
+
+	int		argi = parse_options(options, argc, argv);
+
+	if (argc - argi < 1) {
+		std::cerr << "Error: no operation specified" << std::endl;
+		help_propose(std::cerr);
+		return 2;
+	}
+
+	std::string	operation = argv[argi];
+	++argi;
+
+	if (!policy_exists()) {
+		std::cerr << "Error: no policy initialized. Run: git-crypt policy-init" << std::endl;
+		return 1;
+	}
+
+	std::string	key_path;
+	try {
+		key_path = ssh_get_signing_key_path();
+	} catch (...) {
+		std::cerr << "Error: no SSH signing key configured." << std::endl;
+		return 1;
+	}
+
+	std::string	fingerprint = ssh_key_fingerprint(key_path);
+	Policy		policy = policy_load();
+
+	if (!policy_is_owner(policy, fingerprint)) {
+		std::cerr << "Error: you are not a policy owner (" << fingerprint << ")" << std::endl;
+		return 1;
+	}
+
+	int	quorum = policy_quorum_for(policy, operation);
+
+	std::map<std::string, std::string>	params;
+	for (int i = argi; i < argc; ++i) {
+		std::string	arg = argv[i];
+		size_t	eq = arg.find('=');
+		if (eq != std::string::npos) {
+			params[arg.substr(0, eq)] = arg.substr(eq + 1);
+		} else {
+			std::ostringstream	key;
+			key << "arg" << (i - argi);
+			params[key.str()] = arg;
+		}
+	}
+
+	std::string	id = proposal_create(operation, fingerprint, quorum, params);
+
+	// Auto-sign the proposal
+	Proposal	p = proposal_load(id);
+	std::string	sign_data = p.id + "\t" + p.operation + "\t" + p.timestamp;
+	std::string	signature = ssh_sign(sign_data, key_path);
+	proposal_approve(id, fingerprint, signature);
+
+	// Audit log
+	{
+		std::string	id_type = "ssh";
+		std::vector<std::string>	files;
+		audit_log_operation("propose", fingerprint, id_type, 0, files);
+	}
+
+	if (!no_commit) {
+		std::string	proposal_dir = proposals_dir() + "/" + id;
+		std::vector<std::string>	add_cmd;
+		add_cmd.push_back("git");
+		add_cmd.push_back("add");
+		add_cmd.push_back(proposal_dir);
+		exec_command(add_cmd);
+
+		std::vector<std::string>	commit_cmd;
+		commit_cmd.push_back("git");
+		commit_cmd.push_back("commit");
+		commit_cmd.push_back("-m");
+		commit_cmd.push_back("Propose " + operation + " (proposal " + id + ")");
+		exec_command(commit_cmd);
+	}
+
+	std::cout << "Proposal created: " << id << std::endl;
+	std::cout << "Operation: " << operation << std::endl;
+	std::cout << "Quorum: " << quorum << " approvals required" << std::endl;
+	std::cout << "Auto-signed by proposer." << std::endl;
+
+	std::vector<std::string>	approvals = proposal_get_approvals(id);
+	std::cout << "Approvals: " << approvals.size() << "/" << quorum << std::endl;
+
+	return 0;
+}
+
+int approve (int argc, const char** argv)
+{
+	bool		no_commit = false;
+	Options_list	options;
+	options.push_back(Option_def("-n", &no_commit));
+	options.push_back(Option_def("--no-commit", &no_commit));
+
+	int		argi = parse_options(options, argc, argv);
+
+	if (argc - argi < 1) {
+		std::cerr << "Error: no proposal ID specified" << std::endl;
+		help_approve(std::cerr);
+		return 2;
+	}
+
+	std::string	proposal_id = argv[argi];
+
+	std::string	key_path;
+	try {
+		key_path = ssh_get_signing_key_path();
+	} catch (...) {
+		std::cerr << "Error: no SSH signing key configured." << std::endl;
+		return 1;
+	}
+
+	std::string	fingerprint = ssh_key_fingerprint(key_path);
+	Policy		policy = policy_load();
+
+	if (!policy_is_owner(policy, fingerprint)) {
+		std::cerr << "Error: you are not a policy owner (" << fingerprint << ")" << std::endl;
+		return 1;
+	}
+
+	Proposal	p = proposal_load(proposal_id);
+	if (p.status != "pending") {
+		std::cerr << "Error: proposal " << proposal_id << " is not pending (status: " << p.status << ")" << std::endl;
+		return 1;
+	}
+
+	std::vector<std::string>	existing = proposal_get_approvals(proposal_id);
+	for (size_t i = 0; i < existing.size(); ++i) {
+		if (existing[i] == fingerprint) {
+			std::cerr << "Error: you have already approved this proposal." << std::endl;
+			return 1;
+		}
+	}
+
+	std::string	sign_data = p.id + "\t" + p.operation + "\t" + p.timestamp;
+	std::string	signature = ssh_sign(sign_data, key_path);
+	proposal_approve(proposal_id, fingerprint, signature);
+
+	// Audit log
+	{
+		std::string	id_type = "ssh";
+		std::vector<std::string>	files;
+		audit_log_operation("approve", fingerprint, id_type, 0, files);
+	}
+
+	if (!no_commit) {
+		std::string	proposal_dir = proposals_dir() + "/" + proposal_id;
+		std::vector<std::string>	add_cmd;
+		add_cmd.push_back("git");
+		add_cmd.push_back("add");
+		add_cmd.push_back(proposal_dir);
+		exec_command(add_cmd);
+
+		std::vector<std::string>	commit_cmd;
+		commit_cmd.push_back("git");
+		commit_cmd.push_back("commit");
+		commit_cmd.push_back("-m");
+		commit_cmd.push_back("Approve proposal " + proposal_id);
+		exec_command(commit_cmd);
+	}
+
+	std::vector<std::string>	approvals = proposal_get_approvals(proposal_id);
+	std::cout << "Approved proposal " << proposal_id << std::endl;
+	std::cout << "Approvals: " << approvals.size() << "/" << p.quorum_required << std::endl;
+
+	if (proposal_has_quorum(proposal_id)) {
+		std::cout << "Quorum reached! Run: git-crypt execute " << proposal_id << std::endl;
+	}
+
+	return 0;
+}
+
+int execute_proposal (int argc, const char** argv)
+{
+	Options_list	options;
+	int		argi = parse_options(options, argc, argv);
+
+	if (argc - argi < 1) {
+		std::cerr << "Error: no proposal ID specified" << std::endl;
+		help_execute_proposal(std::cerr);
+		return 2;
+	}
+
+	std::string	proposal_id = argv[argi];
+
+	Proposal	p = proposal_load(proposal_id);
+	if (p.status != "pending") {
+		std::cerr << "Error: proposal " << proposal_id << " is not pending (status: " << p.status << ")" << std::endl;
+		return 1;
+	}
+
+	if (!proposal_has_quorum(proposal_id)) {
+		std::vector<std::string>	approvals = proposal_get_approvals(proposal_id);
+		std::cerr << "Error: quorum not met. Have " << approvals.size()
+			  << " of " << p.quorum_required << " required approvals." << std::endl;
+		return 1;
+	}
+
+	std::vector<std::string>	op_args;
+	for (std::map<std::string, std::string>::const_iterator it = p.params.begin();
+	     it != p.params.end(); ++it) {
+		op_args.push_back(it->second);
+	}
+	std::vector<const char*>	op_argv;
+	for (size_t i = 0; i < op_args.size(); ++i) {
+		op_argv.push_back(op_args[i].c_str());
+	}
+
+	int	result = 1;
+	std::cout << "Executing proposal " << proposal_id << ": " << p.operation << std::endl;
+
+	if (p.operation == "add-gpg-user") {
+		result = add_gpg_user(static_cast<int>(op_argv.size()), op_argv.empty() ? 0 : &op_argv[0]);
+	} else if (p.operation == "rm-gpg-user") {
+		result = rm_gpg_user(static_cast<int>(op_argv.size()), op_argv.empty() ? 0 : &op_argv[0]);
+	} else if (p.operation == "add-age-recipient") {
+		result = add_age_recipient(static_cast<int>(op_argv.size()), op_argv.empty() ? 0 : &op_argv[0]);
+	} else if (p.operation == "rm-age-recipient") {
+		result = rm_age_recipient(static_cast<int>(op_argv.size()), op_argv.empty() ? 0 : &op_argv[0]);
+	} else if (p.operation == "add-wallet-recipient") {
+		result = add_wallet_recipient(static_cast<int>(op_argv.size()), op_argv.empty() ? 0 : &op_argv[0]);
+	} else if (p.operation == "rotate-key") {
+		result = rotate_key(static_cast<int>(op_argv.size()), op_argv.empty() ? 0 : &op_argv[0]);
+	} else {
+		std::cerr << "Error: unknown operation: " << p.operation << std::endl;
+		return 1;
+	}
+
+	if (result == 0) {
+		p.status = "executed";
+	} else {
+		p.status = "failed";
+	}
+	proposal_save(p);
+
+	// Audit log
+	{
+		std::string	id_type = "ssh";
+		std::string	identity;
+		try {
+			std::string	kp = ssh_get_signing_key_path();
+			identity = ssh_key_fingerprint(kp);
+		} catch (...) {
+			identity = "unknown";
+		}
+		std::vector<std::string>	files;
+		audit_log_operation("execute", identity, id_type, 0, files);
+	}
+
+	return result;
+}
+
+int proposals_list (int argc, const char** argv)
+{
+	bool		show_all = false;
+	Options_list	options;
+	options.push_back(Option_def("--all", &show_all));
+
+	parse_options(options, argc, argv);
+
+	std::string	filter = show_all ? "" : "pending";
+	std::vector<Proposal>	props = proposal_list(filter);
+
+	if (props.empty()) {
+		std::cout << "No " << (show_all ? "" : "pending ") << "proposals found." << std::endl;
+		return 0;
+	}
+
+	for (size_t i = 0; i < props.size(); ++i) {
+		const Proposal&	pr = props[i];
+		std::vector<std::string>	approvals = proposal_get_approvals(pr.id);
+		std::cout << "[" << pr.id << "] " << pr.operation
+			  << " (" << pr.status << ")" << std::endl;
+		std::cout << "    Proposed: " << pr.timestamp
+			  << " by " << pr.proposer_fingerprint << std::endl;
+		std::cout << "    Approvals: " << approvals.size()
+			  << "/" << pr.quorum_required << std::endl;
+		if (!pr.params.empty()) {
+			std::cout << "    Params:";
+			for (std::map<std::string, std::string>::const_iterator it = pr.params.begin();
+			     it != pr.params.end(); ++it) {
+				std::cout << " " << it->first << "=" << it->second;
+			}
+			std::cout << std::endl;
+		}
+		std::cout << std::endl;
+	}
+
+	std::cout << "Total: " << props.size() << " proposal(s)" << std::endl;
+	return 0;
+}
+
+int policy_show (int argc, const char** argv)
+{
+	Options_list	options;
+	parse_options(options, argc, argv);
+
+	if (!policy_exists()) {
+		std::cout << "No policy initialized." << std::endl;
+		std::cout << "Run: git-crypt policy-init" << std::endl;
+		return 0;
+	}
+
+	Policy	policy = policy_load();
+
+	std::cout << "Policy file: " << policy_path() << std::endl;
+	std::cout << std::endl;
+
+	std::cout << "Owners (" << policy.owners.size() << "):" << std::endl;
+	for (size_t i = 0; i < policy.owners.size(); ++i) {
+		std::cout << "  " << policy.owners[i].name
+			  << " (" << policy.owners[i].fingerprint << ")" << std::endl;
+	}
+
+	if (!policy.members.empty()) {
+		std::cout << std::endl;
+		std::cout << "Members (" << policy.members.size() << "):" << std::endl;
+		for (size_t i = 0; i < policy.members.size(); ++i) {
+			std::cout << "  " << policy.members[i].name
+				  << " (" << policy.members[i].fingerprint << ")" << std::endl;
+		}
+	}
+
+	if (!policy.agents.empty()) {
+		std::cout << std::endl;
+		std::cout << "Agents (" << policy.agents.size() << "):" << std::endl;
+		for (size_t i = 0; i < policy.agents.size(); ++i) {
+			std::cout << "  " << policy.agents[i].name;
+			if (!policy.agents[i].key_scopes.empty()) {
+				std::cout << " (scopes:";
+				for (size_t j = 0; j < policy.agents[i].key_scopes.size(); ++j) {
+					std::cout << " " << policy.agents[i].key_scopes[j];
+				}
+				std::cout << ")";
+			}
+			std::cout << std::endl;
+		}
+	}
+
+	if (!policy.quorums.empty()) {
+		std::cout << std::endl;
+		std::cout << "Quorum requirements:" << std::endl;
+		for (size_t i = 0; i < policy.quorums.size(); ++i) {
+			std::cout << "  " << policy.quorums[i].operation
+				  << ": " << policy.quorums[i].required << " approval(s)" << std::endl;
+		}
+	}
+
+	return 0;
+}

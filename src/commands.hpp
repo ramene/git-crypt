@@ -68,6 +68,13 @@ int audit_log (int argc, const char** argv);
 int verify_audit (int argc, const char** argv);
 int add_wallet_recipient (int argc, const char** argv);
 int anchor_audit (int argc, const char** argv);
+// Multi-party ACL commands:
+int policy_init (int argc, const char** argv);
+int propose (int argc, const char** argv);
+int approve (int argc, const char** argv);
+int execute_proposal (int argc, const char** argv);
+int proposals_list (int argc, const char** argv);
+int policy_show (int argc, const char** argv);
 
 // Help messages:
 void help_init (std::ostream&);
@@ -93,6 +100,12 @@ void help_audit_log (std::ostream&);
 void help_verify_audit (std::ostream&);
 void help_add_wallet_recipient (std::ostream&);
 void help_anchor_audit (std::ostream&);
+void help_policy_init (std::ostream&);
+void help_propose (std::ostream&);
+void help_approve (std::ostream&);
+void help_execute_proposal (std::ostream&);
+void help_proposals_list (std::ostream&);
+void help_policy_show (std::ostream&);
 
 // other
 std::string get_git_config (const std::string& name);

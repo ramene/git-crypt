@@ -38,6 +38,9 @@
 #include "sops.hpp"
 #include "audit.hpp"
 #include "wallet.hpp"
+#include "ssh_signing.hpp"
+#include "policy.hpp"
+#include "proposal.hpp"
 #include "parse_options.hpp"
 #include <cstring>
 #include <unistd.h>
@@ -74,6 +77,14 @@ static void print_usage (std::ostream& out)
 	out << "Wallet commands:" << std::endl;
 	out << "  add-wallet-recipient ADDR  add an Ethereum wallet as a collaborator" << std::endl;
 	out << "  unlock --wallet ADDR       decrypt using wallet-derived identity" << std::endl;
+	out << std::endl;
+	out << "Multi-party access control:" << std::endl;
+	out << "  policy-init          initialize multi-party access control policy" << std::endl;
+	out << "  propose OPERATION    create a proposal requiring multi-party approval" << std::endl;
+	out << "  approve ID           approve a pending proposal" << std::endl;
+	out << "  execute ID           execute an approved proposal" << std::endl;
+	out << "  proposals            list pending proposals" << std::endl;
+	out << "  policy-show          display current access control policy" << std::endl;
 	out << std::endl;
 	out << "Audit commands:" << std::endl;
 	out << "  audit-log                display cryptographic audit trail" << std::endl;
@@ -154,6 +165,18 @@ static bool help_for_command (const char* command, std::ostream& out)
 		help_add_wallet_recipient(out);
 	} else if (std::strcmp(command, "anchor-audit") == 0) {
 		help_anchor_audit(out);
+	} else if (std::strcmp(command, "policy-init") == 0) {
+		help_policy_init(out);
+	} else if (std::strcmp(command, "propose") == 0) {
+		help_propose(out);
+	} else if (std::strcmp(command, "approve") == 0) {
+		help_approve(out);
+	} else if (std::strcmp(command, "execute") == 0) {
+		help_execute_proposal(out);
+	} else if (std::strcmp(command, "proposals") == 0) {
+		help_proposals_list(out);
+	} else if (std::strcmp(command, "policy-show") == 0) {
+		help_policy_show(out);
 	} else {
 		return false;
 	}
@@ -304,6 +327,25 @@ try {
 		if (std::strcmp(command, "anchor-audit") == 0) {
 			return anchor_audit(argc, argv);
 		}
+		// Multi-party ACL commands:
+		if (std::strcmp(command, "policy-init") == 0) {
+			return policy_init(argc, argv);
+		}
+		if (std::strcmp(command, "propose") == 0) {
+			return propose(argc, argv);
+		}
+		if (std::strcmp(command, "approve") == 0) {
+			return approve(argc, argv);
+		}
+		if (std::strcmp(command, "execute") == 0) {
+			return execute_proposal(argc, argv);
+		}
+		if (std::strcmp(command, "proposals") == 0) {
+			return proposals_list(argc, argv);
+		}
+		if (std::strcmp(command, "policy-show") == 0) {
+			return policy_show(argc, argv);
+		}
 		// Plumbing commands (executed by git, not by user):
 		if (std::strcmp(command, "clean") == 0) {
 			return clean(argc, argv);
@@ -337,6 +379,9 @@ try {
 	return 1;
 } catch (const Wallet_error& e) {
 	std::cerr << "git-crypt: Wallet error: " << e.message << std::endl;
+	return 1;
+} catch (const Ssh_signing_error& e) {
+	std::cerr << "git-crypt: SSH signing error: " << e.message << std::endl;
 	return 1;
 } catch (const System_error& e) {
 	std::cerr << "git-crypt: System error: " << e.message() << std::endl;
