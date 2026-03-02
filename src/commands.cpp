@@ -2950,6 +2950,139 @@ int verify_audit (int argc, const char** argv)
 	}
 }
 
+void help_anchor_audit (std::ostream& out)
+{
+	//     |--------------------------------------------------------------------------------| 80 chars
+	out << "Usage: git-crypt anchor-audit [OPTIONS]" << std::endl;
+	out << std::endl;
+	out << "    --rpc-url URL               Ethereum JSON-RPC endpoint" << std::endl;
+	out << "    --from ADDRESS              Ethereum address to send from" << std::endl;
+	out << "    --list                      List previous on-chain anchors" << std::endl;
+	out << std::endl;
+	out << "Publish a SHA3-256 hash of the current audit log state to an" << std::endl;
+	out << "Ethereum-compatible blockchain for immutable timestamping." << std::endl;
+	out << std::endl;
+	out << "Configuration:" << std::endl;
+	out << "    git config audit.rpc-url URL    Default RPC endpoint" << std::endl;
+	out << "    git config audit.from ADDRESS   Default sender address" << std::endl;
+	out << "    git config wallet.signer PATH   Signing tool (default: cast)" << std::endl;
+	out << std::endl;
+}
+int anchor_audit (int argc, const char** argv)
+{
+	const char*	rpc_url = 0;
+	const char*	from_address = 0;
+	bool		list_mode = false;
+	Options_list	options;
+	options.push_back(Option_def("--rpc-url", &rpc_url));
+	options.push_back(Option_def("--from", &from_address));
+	options.push_back(Option_def("--list", &list_mode));
+
+	parse_options(options, argc, argv);
+
+	if (list_mode) {
+		// List previous anchors
+		std::vector<Audit_anchor>	anchors = audit_read_anchors();
+		if (anchors.empty()) {
+			std::cout << "No on-chain anchors recorded." << std::endl;
+			return 0;
+		}
+		for (size_t i = 0; i < anchors.size(); ++i) {
+			const Audit_anchor&	a = anchors[i];
+			std::cout << "[" << (i + 1) << "] " << a.timestamp << std::endl;
+			std::cout << "    State hash:  " << a.state_hash.substr(0, 16) << "..." << std::endl;
+			std::cout << "    Tx hash:     " << a.tx_hash << std::endl;
+			std::cout << "    RPC URL:     " << a.rpc_url << std::endl;
+			std::cout << "    Entries:     " << a.entry_count << std::endl;
+			std::cout << std::endl;
+		}
+		std::cout << "Total: " << anchors.size() << " anchors" << std::endl;
+		return 0;
+	}
+
+	// Resolve RPC URL
+	std::string	rpc;
+	if (rpc_url) {
+		rpc = rpc_url;
+	} else {
+		try {
+			rpc = get_git_config("audit.rpc-url");
+		} catch (...) {
+		}
+	}
+	if (rpc.empty()) {
+		std::clog << "Error: no RPC URL specified." << std::endl;
+		std::clog << "Use --rpc-url URL or: git config audit.rpc-url URL" << std::endl;
+		return 2;
+	}
+
+	// Resolve from address
+	std::string	from;
+	if (from_address) {
+		from = from_address;
+	} else {
+		try {
+			from = get_git_config("audit.from");
+		} catch (...) {
+		}
+	}
+	if (from.empty()) {
+		std::clog << "Error: no sender address specified." << std::endl;
+		std::clog << "Use --from ADDRESS or: git config audit.from ADDRESS" << std::endl;
+		return 2;
+	}
+
+	// Verify audit log integrity first
+	std::vector<Audit_entry>	entries = audit_read_log();
+	if (entries.empty()) {
+		std::clog << "Error: audit log is empty. Nothing to anchor." << std::endl;
+		return 1;
+	}
+
+	size_t	valid = audit_verify_chain(entries);
+	if (valid != entries.size()) {
+		std::clog << "Error: audit log hash chain is broken at entry " << (valid + 1) << "." << std::endl;
+		std::clog << "Fix the audit log before anchoring." << std::endl;
+		return 1;
+	}
+
+	// Compute state hash
+	std::string	state_hash = audit_state_hash();
+	std::cout << "Audit state hash: " << state_hash << std::endl;
+	std::cout << "Entries:          " << entries.size() << std::endl;
+	std::cout << "Anchoring to:     " << rpc << std::endl;
+	std::cout << "From:             " << from << std::endl;
+
+	// Publish on-chain
+	std::string	tx_hash;
+	try {
+		tx_hash = audit_anchor_onchain(state_hash, rpc, from);
+	} catch (const Error& e) {
+		std::clog << "Error: " << e.message << std::endl;
+		return 1;
+	}
+
+	if (tx_hash.empty()) {
+		std::clog << "Warning: transaction sent but hash could not be parsed from output." << std::endl;
+		std::clog << "Check the blockchain for the transaction." << std::endl;
+		tx_hash = "unknown";
+	}
+
+	std::cout << "Transaction hash: " << tx_hash << std::endl;
+	std::cout << "Anchor published successfully." << std::endl;
+
+	// Record the anchor locally
+	audit_record_anchor(state_hash, tx_hash, rpc, entries.size());
+
+	// Also log the anchor operation in the audit trail itself
+	std::string	identity_type;
+	std::string	identity = audit_get_identity(identity_type);
+	std::vector<std::string>	empty_files;
+	audit_log_operation("anchor", identity, identity_type, 0, empty_files);
+
+	return 0;
+}
+
 void help_keygen (std::ostream& out)
 {
 	//     |--------------------------------------------------------------------------------| 80 chars
