@@ -18,6 +18,7 @@ set(SOURCES
     src/shamir.cpp
     src/sops.cpp
     src/audit.cpp
+    src/wallet.cpp
     src/key.cpp
     src/util.cpp
     src/parse_options.cpp

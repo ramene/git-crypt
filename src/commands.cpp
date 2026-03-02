@@ -37,6 +37,7 @@
 #include "shamir.hpp"
 #include "sops.hpp"
 #include "audit.hpp"
+#include "wallet.hpp"
 #include "parse_options.hpp"
 #include "coprocess.hpp"
 #include <unistd.h>
@@ -777,6 +778,43 @@ static void encrypt_repo_key_age (const char* key_name, const Key_file::Entry& k
 	}
 }
 
+// Try to decrypt a repo key using a wallet-derived identity
+// Looks for .age files in the wallet/ subdirectory of each version
+static bool decrypt_repo_key_wallet (Key_file& key_file, const char* key_name, uint32_t key_version, const std::string& keys_path, const std::string& wallet_identity_hex)
+{
+	std::ostringstream	dir_builder;
+	dir_builder << keys_path << '/' << (key_name ? key_name : "default") << '/' << key_version << "/wallet";
+	std::string		wallet_dir(dir_builder.str());
+
+	if (access(wallet_dir.c_str(), F_OK) != 0) {
+		return false;
+	}
+
+	std::vector<std::string>	dirents(get_directory_contents(wallet_dir.c_str()));
+	for (std::vector<std::string>::const_iterator entry(dirents.begin()); entry != dirents.end(); ++entry) {
+		if (entry->size() > 4 && entry->substr(entry->size() - 4) == ".age") {
+			std::string		path(wallet_dir + "/" + *entry);
+			std::stringstream	decrypted_contents;
+			if (wallet_decrypt_from_file(path, wallet_identity_hex, decrypted_contents)) {
+				Key_file		this_version_key_file;
+				this_version_key_file.load(decrypted_contents);
+				const Key_file::Entry*	this_version_entry = this_version_key_file.get(key_version);
+				if (!this_version_entry) {
+					throw Error("Wallet-encrypted keyfile is malformed because it does not contain expected key version");
+				}
+				if (!same_key_name(key_name, this_version_key_file.get_key_name())) {
+					throw Error("Wallet-encrypted keyfile is malformed because it does not contain expected key name");
+				}
+				key_file.set_key_name(key_name);
+				key_file.add(*this_version_entry);
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
 static int parse_plumbing_options (const char** key_name, const char** key_file, int argc, const char** argv)
 {
 	Options_list	options;
@@ -1117,19 +1155,23 @@ void help_unlock (std::ostream& out)
 	out << "Usage: git-crypt unlock [OPTIONS]" << std::endl;
 	out << "   or: git-crypt unlock [OPTIONS] KEY_FILE ..." << std::endl;
 	out << "   or: git-crypt unlock --shares FILE1 FILE2 ..." << std::endl;
+	out << "   or: git-crypt unlock --wallet ADDRESS" << std::endl;
 	out << std::endl;
 	out << "    -k, --key-name KEYNAME   Unlock only the given key, instead of all keys" << std::endl;
 	out << "    --shares FILE ...        Reconstruct key from Shamir share files" << std::endl;
+	out << "    --wallet ADDRESS         Unlock using wallet-derived identity" << std::endl;
 	out << std::endl;
 }
 int unlock (int argc, const char** argv)
 {
 	const char*	key_name_filter = 0;
 	bool		use_shares = false;
+	const char*	wallet_address = 0;
 	Options_list	options;
 	options.push_back(Option_def("-k", &key_name_filter));
 	options.push_back(Option_def("--key-name", &key_name_filter));
 	options.push_back(Option_def("--shares", &use_shares));
+	options.push_back(Option_def("--wallet", &wallet_address));
 
 	int		argi = parse_options(options, argc, argv);
 
@@ -1197,6 +1239,63 @@ int unlock (int argc, const char** argv)
 			return 1;
 		}
 		key_files.push_back(key_file);
+	} else if (wallet_address) {
+		// Unlock using wallet-derived identity
+		if (!wallet_signer_is_available()) {
+			std::clog << "Error: wallet signer tool not found." << std::endl;
+			std::clog << "Install Foundry (https://getfoundry.sh) or configure: git config wallet.signer <path>" << std::endl;
+			return 1;
+		}
+		if (!age_is_available()) {
+			std::clog << "Error: 'age' command not found. Please install age." << std::endl;
+			return 1;
+		}
+
+		std::string	challenge = wallet_challenge_message();
+		std::clog << "Signing challenge with wallet " << wallet_address << "..." << std::endl;
+
+		std::string	signature = wallet_sign_message(wallet_address, challenge);
+		std::string	identity_hex = wallet_derive_age_identity(signature);
+
+		std::string			repo_keys_path(get_repo_keys_path());
+
+		if (key_name_filter) {
+			std::string	key_dir_path(repo_keys_path + "/" + key_name_filter);
+			uint32_t	key_version = get_latest_key_version(key_dir_path);
+			Key_file	key_file;
+			bool		decrypted = decrypt_repo_key_wallet(key_file, key_name_filter, key_version, repo_keys_path, identity_hex);
+			if (!decrypted) {
+				std::clog << "Error: wallet identity cannot decrypt key '" << key_name_filter << "'." << std::endl;
+				return 1;
+			}
+			key_files.push_back(key_file);
+		} else {
+			std::vector<std::string>	dirents;
+			if (access(repo_keys_path.c_str(), F_OK) == 0) {
+				dirents = get_directory_contents(repo_keys_path.c_str());
+			}
+			for (std::vector<std::string>::const_iterator dirent(dirents.begin()); dirent != dirents.end(); ++dirent) {
+				const char*	kn = 0;
+				if (*dirent != "default") {
+					if (!validate_key_name(dirent->c_str())) {
+						continue;
+					}
+					kn = dirent->c_str();
+				}
+				std::string	key_dir_path(repo_keys_path + "/" + *dirent);
+				uint32_t	key_version = get_latest_key_version(key_dir_path);
+				Key_file	key_file;
+				if (decrypt_repo_key_wallet(key_file, kn, key_version, repo_keys_path, identity_hex)) {
+					key_files.push_back(key_file);
+				}
+			}
+			if (key_files.empty()) {
+				std::clog << "Error: wallet identity cannot decrypt any keys in this repository." << std::endl;
+				return 1;
+			}
+		}
+
+		explicit_memset(&identity_hex[0], 0, identity_hex.size());
 	} else if (argc - argi > 0) {
 		// Read from the symmetric key file(s)
 
@@ -1918,6 +2017,213 @@ int rm_age_recipient (int argc, const char** argv)
 			return 1;
 		}
 	}
+
+	return 0;
+}
+
+void help_add_wallet_recipient (std::ostream& out)
+{
+	//     |--------------------------------------------------------------------------------| 80 chars
+	out << "Usage: git-crypt add-wallet-recipient [OPTIONS] ADDRESS" << std::endl;
+	out << std::endl;
+	out << "    -k, --key-name KEYNAME      Add recipient to given key, instead of default" << std::endl;
+	out << "    -n, --no-commit             Don't automatically commit" << std::endl;
+	out << std::endl;
+	out << "ADDRESS is an Ethereum wallet address (0x...)." << std::endl;
+	out << "The user will be prompted to sign a challenge message with their wallet." << std::endl;
+	out << "An age identity is derived from the signature and used to wrap the key." << std::endl;
+	out << std::endl;
+	out << "Configuration:" << std::endl;
+	out << "    git config wallet.signer PATH   Path to wallet signer (default: cast)" << std::endl;
+	out << "    git config age.program PATH     Path to age binary (default: age)" << std::endl;
+	out << std::endl;
+}
+int add_wallet_recipient (int argc, const char** argv)
+{
+	const char*		key_name = 0;
+	bool			no_commit = false;
+	Options_list		options;
+	options.push_back(Option_def("-k", &key_name));
+	options.push_back(Option_def("--key-name", &key_name));
+	options.push_back(Option_def("-n", &no_commit));
+	options.push_back(Option_def("--no-commit", &no_commit));
+
+	int			argi = parse_options(options, argc, argv);
+	if (argc - argi != 1) {
+		std::clog << "Error: exactly one wallet address required" << std::endl;
+		help_add_wallet_recipient(std::clog);
+		return 2;
+	}
+
+	const std::string	address(argv[argi]);
+
+	// Validate address format (basic check for 0x + 40 hex chars)
+	if (address.size() != 42 || address[0] != '0' || address[1] != 'x') {
+		std::clog << "Error: invalid Ethereum address format. Expected 0x followed by 40 hex characters." << std::endl;
+		return 1;
+	}
+	for (size_t i = 2; i < address.size(); ++i) {
+		char c = address[i];
+		if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+			std::clog << "Error: invalid hex character in address: " << c << std::endl;
+			return 1;
+		}
+	}
+
+	// Check that wallet signer is available
+	if (!wallet_signer_is_available()) {
+		std::clog << "Error: wallet signer tool not found." << std::endl;
+		std::clog << "Install Foundry (https://getfoundry.sh) for 'cast', or configure:" << std::endl;
+		std::clog << "    git config wallet.signer <path-to-signer>" << std::endl;
+		return 1;
+	}
+
+	// Check that age is available
+	if (!age_is_available()) {
+		std::clog << "Error: 'age' command not found. Please install age (https://age-encryption.org)." << std::endl;
+		return 1;
+	}
+
+	// Build challenge message and have user sign it
+	std::string	challenge = wallet_challenge_message();
+	std::clog << "Signing challenge with wallet " << address << "..." << std::endl;
+	std::clog << "Challenge: " << challenge << std::endl;
+
+	std::string	signature;
+	try {
+		signature = wallet_sign_message(address, challenge);
+	} catch (const Wallet_error& e) {
+		std::clog << "Error: " << e.message << std::endl;
+		return 1;
+	}
+
+	// Derive age identity from signature
+	std::string	identity_hex = wallet_derive_age_identity(signature);
+
+	// Derive age recipient (public key) from the identity
+	std::string	recipient;
+	try {
+		recipient = wallet_derive_age_recipient(identity_hex);
+	} catch (const Wallet_error& e) {
+		std::clog << "Error: " << e.message << std::endl;
+		return 1;
+	}
+
+	std::clog << "Derived age recipient: " << recipient << std::endl;
+
+	// Load the symmetric key
+	Key_file			key_file;
+	load_key(key_file, key_name);
+	const Key_file::Entry*		key = key_file.get_latest();
+	if (!key) {
+		std::clog << "Error: key file is empty";
+		if (key_name) {
+			std::clog << " (key '" << key_name << "')";
+		}
+		std::clog << std::endl;
+		return 1;
+	}
+
+	// Encrypt the key for the wallet-derived age recipient
+	// Store under .git-crypt/keys/<name>/<version>/wallet/<address>.age
+	std::string	key_file_data;
+	{
+		Key_file	this_version_key_file;
+		this_version_key_file.set_key_name(key_name);
+		this_version_key_file.add(*key);
+		key_file_data = this_version_key_file.store_to_string();
+	}
+
+	const std::string		state_path(get_repo_state_path());
+	const std::string		keys_path(get_repo_keys_path(state_path));
+	std::vector<std::string>	new_files;
+
+	std::ostringstream	path_builder;
+	path_builder << keys_path << '/' << (key_name ? key_name : "default") << '/' << key->version << "/wallet/" << address << ".age";
+	std::string		path(path_builder.str());
+
+	if (access(path.c_str(), F_OK) == 0) {
+		std::clog << "Wallet recipient " << address << " is already added." << std::endl;
+		return 0;
+	}
+
+	mkdir_parent(path);
+	age_encrypt_to_file(path, recipient, key_file_data.data(), key_file_data.size());
+	new_files.push_back(path);
+
+	// Write a metadata file with the address-to-recipient mapping
+	std::ostringstream	meta_path_builder;
+	meta_path_builder << keys_path << '/' << (key_name ? key_name : "default") << '/' << key->version << "/wallet/" << address << ".meta";
+	std::string		meta_path(meta_path_builder.str());
+
+	{
+		std::ofstream	meta_file(meta_path.c_str());
+		meta_file << "address=" << address << std::endl;
+		meta_file << "recipient=" << recipient << std::endl;
+		meta_file.close();
+		if (meta_file) {
+			new_files.push_back(meta_path);
+		}
+	}
+
+	// Ensure .gitattributes in the state directory
+	const std::string		state_gitattributes_path(state_path + "/.gitattributes");
+	if (access(state_gitattributes_path.c_str(), F_OK) != 0) {
+		std::ofstream		state_gitattributes_file(state_gitattributes_path.c_str());
+		state_gitattributes_file << "# Do not edit this file.  To specify the files to encrypt, create your own\n";
+		state_gitattributes_file << "# .gitattributes file in the directory where your files are.\n";
+		state_gitattributes_file << "* !filter !diff\n";
+		state_gitattributes_file << "*.gpg binary\n";
+		state_gitattributes_file << "*.age binary\n";
+		state_gitattributes_file.close();
+		if (!state_gitattributes_file) {
+			std::clog << "Error: unable to write " << state_gitattributes_path << std::endl;
+			return 1;
+		}
+		new_files.push_back(state_gitattributes_path);
+	}
+
+	// add/commit the new files
+	if (!new_files.empty()) {
+		std::vector<std::string>	command;
+		command.push_back("git");
+		command.push_back("add");
+		command.push_back("--");
+		command.insert(command.end(), new_files.begin(), new_files.end());
+		if (!successful_exit(exec_command(command))) {
+			std::clog << "Error: 'git add' failed" << std::endl;
+			return 1;
+		}
+
+		if (!no_commit) {
+			std::ostringstream	commit_message_builder;
+			commit_message_builder << "Add wallet recipient " << address << " to git-crypt";
+			if (key_name) {
+				commit_message_builder << " key '" << key_name << "'";
+			}
+			commit_message_builder << "\n\nWallet address: " << address;
+			commit_message_builder << "\nDerived age recipient: " << recipient << "\n";
+
+			command.clear();
+			command.push_back("git");
+			command.push_back("commit");
+			command.push_back("-m");
+			command.push_back(commit_message_builder.str());
+			command.push_back("--");
+			command.insert(command.end(), new_files.begin(), new_files.end());
+
+			if (!successful_exit(exec_command(command))) {
+				std::clog << "Error: 'git commit' failed" << std::endl;
+				return 1;
+			}
+		}
+	}
+
+	std::clog << "Wallet recipient " << address << " added successfully." << std::endl;
+
+	// Clear sensitive data
+	explicit_memset(&identity_hex[0], 0, identity_hex.size());
+	explicit_memset(&key_file_data[0], 0, key_file_data.size());
 
 	return 0;
 }

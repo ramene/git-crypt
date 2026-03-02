@@ -37,6 +37,7 @@
 #include "age.hpp"
 #include "sops.hpp"
 #include "audit.hpp"
+#include "wallet.hpp"
 #include "parse_options.hpp"
 #include <cstring>
 #include <unistd.h>
@@ -69,6 +70,10 @@ static void print_usage (std::ostream& out)
 	out << "SOPS integration:" << std::endl;
 	out << "  sops-config              generate .sops.yaml for structured file encryption" << std::endl;
 	out << "  credentials-init         create .credentials/ directory with encryption setup" << std::endl;
+	out << std::endl;
+	out << "Wallet commands:" << std::endl;
+	out << "  add-wallet-recipient ADDR  add an Ethereum wallet as a collaborator" << std::endl;
+	out << "  unlock --wallet ADDR       decrypt using wallet-derived identity" << std::endl;
 	out << std::endl;
 	out << "Audit commands:" << std::endl;
 	out << "  audit-log                display cryptographic audit trail" << std::endl;
@@ -144,6 +149,8 @@ static bool help_for_command (const char* command, std::ostream& out)
 		help_audit_log(out);
 	} else if (std::strcmp(command, "verify-audit") == 0) {
 		help_verify_audit(out);
+	} else if (std::strcmp(command, "add-wallet-recipient") == 0) {
+		help_add_wallet_recipient(out);
 	} else {
 		return false;
 	}
@@ -288,6 +295,9 @@ try {
 		if (std::strcmp(command, "verify-audit") == 0) {
 			return verify_audit(argc, argv);
 		}
+		if (std::strcmp(command, "add-wallet-recipient") == 0) {
+			return add_wallet_recipient(argc, argv);
+		}
 		// Plumbing commands (executed by git, not by user):
 		if (std::strcmp(command, "clean") == 0) {
 			return clean(argc, argv);
@@ -318,6 +328,9 @@ try {
 	return 1;
 } catch (const Sops_error& e) {
 	std::cerr << "git-crypt: SOPS error: " << e.message << std::endl;
+	return 1;
+} catch (const Wallet_error& e) {
+	std::cerr << "git-crypt: Wallet error: " << e.message << std::endl;
 	return 1;
 } catch (const System_error& e) {
 	std::cerr << "git-crypt: System error: " << e.message() << std::endl;

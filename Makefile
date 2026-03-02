@@ -24,6 +24,7 @@ OBJFILES = \
     $(SRCDIR)/shamir.o \
     $(SRCDIR)/sops.o \
     $(SRCDIR)/audit.o \
+    $(SRCDIR)/wallet.o \
     $(SRCDIR)/key.o \
     $(SRCDIR)/util.o \
     $(SRCDIR)/parse_options.o \

@@ -66,6 +66,7 @@ int sops_config (int argc, const char** argv);
 int credentials_init (int argc, const char** argv);
 int audit_log (int argc, const char** argv);
 int verify_audit (int argc, const char** argv);
+int add_wallet_recipient (int argc, const char** argv);
 
 // Help messages:
 void help_init (std::ostream&);
@@ -89,6 +90,7 @@ void help_sops_config (std::ostream&);
 void help_credentials_init (std::ostream&);
 void help_audit_log (std::ostream&);
 void help_verify_audit (std::ostream&);
+void help_add_wallet_recipient (std::ostream&);
 
 // other
 std::string get_git_config (const std::string& name);
