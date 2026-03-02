@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, main]
   pull_request:
-    branches: [master]
+    branches: [master, main]
 
 jobs:
   build-and-test:
@@ -14,11 +14,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
+          - os: ubuntu-latest
             compiler: gcc
             cc: gcc
             cxx: g++
-          - os: ubuntu-22.04
+          - os: ubuntu-latest
             compiler: clang
             cc: clang
             cxx: clang++
@@ -29,20 +29,40 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install dependencies (Ubuntu)
         if: startsWith(matrix.os, 'ubuntu')
         run: sudo apt-get update && sudo apt-get install -y libssl-dev
 
+      - name: Set OpenSSL paths (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          OPENSSL_PREFIX="$(brew --prefix openssl)"
+          echo "OPENSSL_CFLAGS=-I${OPENSSL_PREFIX}/include" >> "$GITHUB_ENV"
+          echo "OPENSSL_LDFLAGS=-L${OPENSSL_PREFIX}/lib" >> "$GITHUB_ENV"
+
       - name: Build
         env:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
-        run: make
+        run: make clean && make CXXFLAGS="-Wall -pedantic -Wno-long-long -O2 -std=c++11 $OPENSSL_CFLAGS" LDFLAGS="$OPENSSL_LDFLAGS -lcrypto"
 
       - name: Run tests
         env:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
-        run: make test
+        run: make test CXXFLAGS="-Wall -pedantic -Wno-long-long -O2 -std=c++11 $OPENSSL_CFLAGS" LDFLAGS="$OPENSSL_LDFLAGS -lcrypto"
+
+  cmake-build:
+    name: CMake / ubuntu-latest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev cmake
+
+      - name: Configure and build
+        run: cmake -B build && cmake --build build
