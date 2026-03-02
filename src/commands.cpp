@@ -35,10 +35,10 @@
 #include "gpg.hpp"
 #include "age.hpp"
 #include "shamir.hpp"
+#include "sops.hpp"
 #include "parse_options.hpp"
 #include "coprocess.hpp"
 #include <unistd.h>
-#include <sys/stat.h>
 #include <sys/stat.h>
 #include <stdint.h>
 #include <algorithm>
@@ -54,6 +54,7 @@
 #include <errno.h>
 #include <exception>
 #include <vector>
+#include <set>
 
 enum {
 	// # of arguments per git checkout call; must be large enough to be efficient but small
@@ -1025,6 +1026,7 @@ void help_init (std::ostream& out)
 	out << std::endl;
 	out << "    -k, --key-name KEYNAME      Initialize the given key, instead of the default" << std::endl;
 	out << "    -f, --force                 Force re-initialization (regenerate key)" << std::endl;
+	out << "    --sops                      Also generate .sops.yaml for structured files" << std::endl;
 	out << std::endl;
 }
 
@@ -1032,11 +1034,13 @@ int init (int argc, const char** argv)
 {
 	const char*	key_name = 0;
 	bool		force = false;
+	bool		setup_sops = false;
 	Options_list	options;
 	options.push_back(Option_def("-k", &key_name));
 	options.push_back(Option_def("--key-name", &key_name));
 	options.push_back(Option_def("-f", &force));
 	options.push_back(Option_def("--force", &force));
+	options.push_back(Option_def("--sops", &setup_sops));
 
 	int		argi = parse_options(options, argc, argv);
 
@@ -1088,6 +1092,20 @@ int init (int argc, const char** argv)
 
 	// 2. Configure git for git-crypt
 	configure_git_filters(key_name);
+
+	// 3. Optionally set up SOPS integration
+	if (setup_sops) {
+		std::vector<std::string>	recipients = sops_collect_age_recipients(key_name);
+		std::vector<std::string>	patterns;
+		patterns.push_back("secrets\\.ya?ml$");
+		patterns.push_back("secrets\\.json$");
+		patterns.push_back("\\.env(\\..+)?$");
+		if (sops_generate_config(".sops.yaml", recipients, patterns)) {
+			std::clog << "SOPS config written to .sops.yaml" << std::endl;
+		} else {
+			std::clog << "Warning: unable to write .sops.yaml" << std::endl;
+		}
+	}
 
 	return 0;
 }
@@ -1772,6 +1790,120 @@ int add_age_recipient (int argc, const char** argv)
 	return 0;
 }
 
+void help_rm_age_recipient (std::ostream& out)
+{
+	//     |--------------------------------------------------------------------------------| 80 chars
+	out << "Usage: git-crypt rm-age-recipient [OPTIONS] AGE_RECIPIENT ..." << std::endl;
+	out << std::endl;
+	out << "    -k, --key-name KEYNAME      Remove recipient from given key, instead of default" << std::endl;
+	out << "    -n, --no-commit             Don't automatically commit" << std::endl;
+	out << std::endl;
+}
+int rm_age_recipient (int argc, const char** argv)
+{
+	const char*		key_name = 0;
+	bool			no_commit = false;
+	Options_list		options;
+	options.push_back(Option_def("-k", &key_name));
+	options.push_back(Option_def("--key-name", &key_name));
+	options.push_back(Option_def("-n", &no_commit));
+	options.push_back(Option_def("--no-commit", &no_commit));
+
+	int			argi = parse_options(options, argc, argv);
+	if (argc - argi == 0) {
+		std::clog << "Error: no age recipient specified" << std::endl;
+		help_rm_age_recipient(std::clog);
+		return 2;
+	}
+
+	if (key_name) {
+		validate_key_name_or_throw(key_name);
+	}
+
+	// Compute the hash for each recipient argument (same hash used by add-age-recipient)
+	std::vector<std::string>	recipient_hashes;
+	std::vector<std::string>	recipient_labels;
+	for (int i = argi; i < argc; ++i) {
+		recipient_hashes.push_back(age_recipient_hash(argv[i]));
+		recipient_labels.push_back(argv[i]);
+	}
+
+	const std::string		repo_keys_path(get_repo_keys_path());
+	const std::string		key_dir_name(key_name ? key_name : "default");
+	const std::string		key_path(repo_keys_path + "/" + key_dir_name);
+
+	if (access(key_path.c_str(), F_OK) != 0) {
+		std::clog << "Error: key directory not found: " << key_path << std::endl;
+		return 1;
+	}
+
+	// Iterate over version subdirectories under the key directory
+	std::vector<std::string>	version_dirs(get_directory_contents(key_path.c_str()));
+	std::vector<std::string>	removed_files;
+
+	for (size_t h = 0; h < recipient_hashes.size(); ++h) {
+		bool	found = false;
+		for (std::vector<std::string>::const_iterator version_dir(version_dirs.begin()); version_dir != version_dirs.end(); ++version_dir) {
+			const std::string	age_file(key_path + "/" + *version_dir + "/" + recipient_hashes[h] + ".age");
+			if (access(age_file.c_str(), F_OK) == 0) {
+				found = true;
+				removed_files.push_back(age_file);
+			}
+		}
+
+		if (!found) {
+			std::clog << "Error: age recipient " << recipient_labels[h] << " not found";
+			if (key_name) {
+				std::clog << " in key '" << key_name << "'";
+			}
+			std::clog << std::endl;
+			return 1;
+		}
+	}
+
+	// Stage removals with git rm
+	{
+		std::vector<std::string>	command;
+		command.push_back("git");
+		command.push_back("rm");
+		command.push_back("--quiet");
+		command.push_back("--");
+		command.insert(command.end(), removed_files.begin(), removed_files.end());
+		if (!successful_exit(exec_command(command))) {
+			std::clog << "Error: 'git rm' failed" << std::endl;
+			return 1;
+		}
+	}
+
+	// Commit unless --no-commit
+	if (!no_commit) {
+		std::ostringstream	commit_message_builder;
+		commit_message_builder << "Remove " << recipient_hashes.size() << " git-crypt age recipient" << (recipient_hashes.size() != 1 ? "s" : "");
+		if (key_name) {
+			commit_message_builder << " from key '" << key_name << "'";
+		}
+		commit_message_builder << "\n\nRemoved age recipients:\n\n";
+		for (size_t i = 0; i < recipient_labels.size(); ++i) {
+			commit_message_builder << "    " << recipient_labels[i] << '\n';
+		}
+
+		std::vector<std::string>	command;
+		command.push_back("git");
+		command.push_back("commit");
+		command.push_back("-m");
+		command.push_back(commit_message_builder.str());
+		command.push_back("--");
+		command.insert(command.end(), removed_files.begin(), removed_files.end());
+
+		if (!successful_exit(exec_command(command))) {
+			std::clog << "Error: 'git commit' failed" << std::endl;
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
 void help_rm_gpg_user (std::ostream& out)
 {
 	//     |--------------------------------------------------------------------------------| 80 chars
@@ -2151,6 +2283,83 @@ int split_key (int argc, const char** argv)
 
 	// Securely clear key data
 	explicit_memset(&key_data[0], 0, key_data.size());
+
+	return 0;
+}
+
+void help_sops_config (std::ostream& out)
+{
+	//     |--------------------------------------------------------------------------------| 80 chars
+	out << "Usage: git-crypt sops-config [OPTIONS]" << std::endl;
+	out << std::endl;
+	out << "    -o, --output FILE          Write config to FILE (default: .sops.yaml)" << std::endl;
+	out << "    -k, --key-name KEYNAME     Use recipients from the given key" << std::endl;
+	out << "    -p, --pattern REGEX        File pattern for SOPS (repeatable)" << std::endl;
+	out << std::endl;
+	out << "Generate a .sops.yaml configuration that uses the same age recipients as" << std::endl;
+	out << "git-crypt.  Structured files (YAML/JSON/ENV) matching the patterns will" << std::endl;
+	out << "be encrypted by SOPS (partial encryption: keys visible, values encrypted)." << std::endl;
+	out << std::endl;
+	out << "Default patterns if none specified:" << std::endl;
+	out << "    secrets\\.ya?ml$    secrets\\.json$    \\.env(\\..+)?$" << std::endl;
+}
+int sops_config (int argc, const char** argv)
+{
+	const char*		output_file = 0;
+	const char*		key_name = 0;
+	Options_list		options;
+	options.push_back(Option_def("-o", &output_file));
+	options.push_back(Option_def("--output", &output_file));
+	options.push_back(Option_def("-k", &key_name));
+	options.push_back(Option_def("--key-name", &key_name));
+
+	// Collect -p/--pattern arguments manually from remaining args
+	int			argi = parse_options(options, argc, argv);
+
+	// Check if sops is available
+	if (!sops_is_available()) {
+		std::clog << "Warning: sops is not installed or not in PATH." << std::endl;
+		std::clog << "Install SOPS from https://github.com/getsops/sops" << std::endl;
+		std::clog << "Generating .sops.yaml anyway..." << std::endl;
+	}
+
+	// Collect age recipients
+	std::vector<std::string>	recipients = sops_collect_age_recipients(key_name);
+	if (recipients.empty()) {
+		std::clog << "Warning: no age recipients found." << std::endl;
+		std::clog << "Set recipients via:" << std::endl;
+		std::clog << "  git config git-crypt.sops-age-recipients 'age1...'" << std::endl;
+		std::clog << "  export SOPS_AGE_RECIPIENTS='age1...'" << std::endl;
+		std::clog << "  git-crypt add-age-recipient <RECIPIENT> first" << std::endl;
+	}
+
+	// File patterns: use remaining args or defaults
+	std::vector<std::string>	patterns;
+	for (int i = argi; i < argc; ++i) {
+		patterns.push_back(argv[i]);
+	}
+	if (patterns.empty()) {
+		patterns.push_back("secrets\\.ya?ml$");
+		patterns.push_back("secrets\\.json$");
+		patterns.push_back("\\.env(\\..+)?$");
+	}
+
+	// Output path
+	std::string	out_path = output_file ? output_file : ".sops.yaml";
+
+	if (!sops_generate_config(out_path, recipients, patterns)) {
+		std::clog << "Error: " << out_path << ": unable to write config file" << std::endl;
+		return 1;
+	}
+
+	std::cout << "SOPS config written to " << out_path << std::endl;
+	if (!recipients.empty()) {
+		std::cout << "Age recipients: " << recipients.size() << std::endl;
+	}
+	std::cout << "File patterns: " << patterns.size() << std::endl;
+	std::cout << std::endl;
+	std::cout << "To encrypt a file with SOPS:  sops -e -i secrets.yaml" << std::endl;
+	std::cout << "To edit an encrypted file:    sops secrets.yaml" << std::endl;
 
 	return 0;
 }
@@ -2594,13 +2803,172 @@ void help_verify_commits (std::ostream& out)
 	//     |--------------------------------------------------------------------------------| 80 chars
 	out << "Usage: git-crypt verify-commits [OPTIONS]" << std::endl;
 	out << std::endl;
-	out << "    Verify GPG signatures on commits that modify encrypted files." << std::endl;
+	out << "    -k, --key-name KEYNAME   Check commits for the given key (default: all)" << std::endl;
+	out << "    -n, --max-count N        Check only the last N commits (default: all)" << std::endl;
+	out << std::endl;
+	out << "    Scans git history for commits that modified encrypted files and" << std::endl;
+	out << "    reports which of those commits are not GPG-signed." << std::endl;
 	out << std::endl;
 }
 int verify_commits (int argc, const char** argv)
 {
-	std::clog << "Error: verify-commits is not yet implemented." << std::endl;
-	return 1;
+	const char*	key_name = 0;
+	const char*	max_count_str = 0;
+	Options_list	options;
+	options.push_back(Option_def("-k", &key_name));
+	options.push_back(Option_def("--key-name", &key_name));
+	options.push_back(Option_def("-n", &max_count_str));
+	options.push_back(Option_def("--max-count", &max_count_str));
+
+	int		argi = parse_options(options, argc, argv);
+
+	if (argc - argi != 0) {
+		std::clog << "Error: git-crypt verify-commits takes no positional arguments" << std::endl;
+		help_verify_commits(std::clog);
+		return 2;
+	}
+
+	// 1. Get the list of encrypted files (based on current .gitattributes)
+	std::vector<std::string>	encrypted_files;
+	if (key_name) {
+		validate_key_name_or_throw(key_name);
+		get_encrypted_files(encrypted_files, key_name);
+	} else {
+		// Check all keys by looking at the internal key store
+		std::string	internal_keys_path;
+		try {
+			internal_keys_path = get_internal_keys_path();
+		} catch (...) {
+			// Not initialized — fall through to default key
+		}
+		if (!internal_keys_path.empty() && access(internal_keys_path.c_str(), F_OK) == 0) {
+			std::vector<std::string>	dirents(get_directory_contents(internal_keys_path.c_str()));
+			for (std::vector<std::string>::const_iterator dirent(dirents.begin()); dirent != dirents.end(); ++dirent) {
+				const char* this_key_name = (*dirent == "default" ? 0 : dirent->c_str());
+				get_encrypted_files(encrypted_files, this_key_name);
+			}
+		} else {
+			// Fallback: check files for default key
+			get_encrypted_files(encrypted_files, 0);
+		}
+	}
+
+	if (encrypted_files.empty()) {
+		std::cout << "No encrypted files found." << std::endl;
+		return 0;
+	}
+
+	// 2. Build a set of encrypted file paths for fast lookup
+	std::set<std::string>	encrypted_set(encrypted_files.begin(), encrypted_files.end());
+
+	// 3. Get commits with signature status and changed files
+	// %G? signature status: G=good, B=bad, U=untrusted, X=expired, Y=expired key,
+	//                       R=revoked, E=cannot check, N=no signature
+	std::vector<std::string>	log_command;
+	log_command.push_back("git");
+	log_command.push_back("log");
+	log_command.push_back("--format=%H:%G?:%an:%s");
+	log_command.push_back("--name-only");
+	if (max_count_str) {
+		log_command.push_back(std::string("--max-count=") + max_count_str);
+	}
+
+	std::stringstream		log_output;
+	if (!successful_exit(exec_command(log_command, log_output))) {
+		throw Error("'git log' failed - is this a Git repository?");
+	}
+
+	// 4. Parse the log output and check each commit
+	unsigned int	total_commits = 0;
+	unsigned int	unsigned_commits = 0;
+	unsigned int	signed_commits = 0;
+
+	std::string	line;
+	std::string	current_hash;
+	std::string	current_sig;
+	std::string	current_author;
+	std::string	current_subject;
+	bool		current_touches_encrypted = false;
+	bool		first_commit = true;
+
+	while (std::getline(log_output, line)) {
+		if (line.empty()) {
+			continue;
+		}
+
+		// Detect commit header lines: 40-char hex hash followed by ':'sig':'
+		bool	is_commit_header = false;
+		if (line.length() > 42 && line[40] == ':' && line[42] == ':') {
+			is_commit_header = true;
+			for (int i = 0; i < 40 && is_commit_header; ++i) {
+				char c = line[i];
+				is_commit_header = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+			}
+		}
+
+		if (is_commit_header) {
+			// Report on previous commit if it touched encrypted files
+			if (!first_commit && current_touches_encrypted) {
+				++total_commits;
+				if (current_sig == "N" || current_sig == "E") {
+					++unsigned_commits;
+					std::cout << "UNSIGNED: " << current_hash.substr(0, 12) << " " << current_author << ": " << current_subject << std::endl;
+				} else if (current_sig == "B" || current_sig == "R") {
+					++unsigned_commits;
+					std::cout << "BAD SIG:  " << current_hash.substr(0, 12) << " " << current_author << ": " << current_subject << std::endl;
+				} else {
+					++signed_commits;
+				}
+			}
+
+			// Parse the new commit header
+			current_hash = line.substr(0, 40);
+			current_sig = std::string(1, line[41]);
+			std::string::size_type author_end = line.find(':', 43);
+			if (author_end != std::string::npos) {
+				current_author = line.substr(43, author_end - 43);
+				current_subject = line.substr(author_end + 1);
+			} else {
+				current_author = "";
+				current_subject = line.substr(43);
+			}
+			current_touches_encrypted = false;
+			first_commit = false;
+		} else if (!first_commit) {
+			// This is a filename from --name-only
+			if (encrypted_set.count(line) > 0) {
+				current_touches_encrypted = true;
+			}
+		}
+	}
+
+	// Process the last commit
+	if (!first_commit && current_touches_encrypted) {
+		++total_commits;
+		if (current_sig == "N" || current_sig == "E") {
+			++unsigned_commits;
+			std::cout << "UNSIGNED: " << current_hash.substr(0, 12) << " " << current_author << ": " << current_subject << std::endl;
+		} else if (current_sig == "B" || current_sig == "R") {
+			++unsigned_commits;
+			std::cout << "BAD SIG:  " << current_hash.substr(0, 12) << " " << current_author << ": " << current_subject << std::endl;
+		} else {
+			++signed_commits;
+		}
+	}
+
+	// 5. Print summary
+	std::cout << std::endl;
+	std::cout << total_commits << " commit" << (total_commits != 1 ? "s" : "") << " touched encrypted files: ";
+	std::cout << signed_commits << " signed, " << unsigned_commits << " unsigned/bad" << std::endl;
+
+	if (unsigned_commits > 0) {
+		std::cout << std::endl;
+		std::cout << "Warning: unsigned commits that modify encrypted files may indicate" << std::endl;
+		std::cout << "unauthorized changes. Review these commits carefully." << std::endl;
+		return 1;
+	}
+
+	return 0;
 }
 
 void help_status (std::ostream& out)
@@ -2701,10 +3069,11 @@ int status (int argc, const char** argv)
 		}
 	}
 
-	std::stringstream		output;
-	if (!successful_exit(exec_command(command, output))) {
-		throw Error("'git ls-files' failed - is this a Git repository?");
-	}
+	// Stream git ls-files output via Coprocess to avoid buffering all
+	// output into memory (significant for repos with thousands of files).
+	Coprocess			ls_files;
+	std::istream*			ls_files_stdout = ls_files.stdout_pipe();
+	ls_files.spawn(command);
 
 	// Output looks like (w/o newlines):
 	// ? .gitignore\0
@@ -2736,21 +3105,21 @@ int status (int argc, const char** argv)
 		check_attr.spawn(check_attr_command);
 	}
 
-	while (output.peek() != -1) {
+	while (ls_files_stdout->peek() != -1) {
 		std::string		tag;
 		std::string		object_id;
 		std::string		filename;
-		output >> tag;
+		*ls_files_stdout >> tag;
 		if (tag != "?") {
 			std::string	mode;
 			std::string	stage;
-			output >> mode >> object_id >> stage;
+			*ls_files_stdout >> mode >> object_id >> stage;
 			if (!is_git_file_mode(mode)) {
 				continue;
 			}
 		}
-		output >> std::ws;
-		std::getline(output, filename, '\0');
+		*ls_files_stdout >> std::ws;
+		std::getline(*ls_files_stdout, filename, '\0');
 
 		std::pair<std::string, std::string> file_attrs;
 		if (check_attr_stdin) {
@@ -2839,12 +3208,15 @@ int status (int argc, const char** argv)
 		}
 	}
 
-	// Clean up batch attribute querying coprocess
+	// Clean up coprocesses
 	if (check_attr_stdin) {
 		check_attr.close_stdin();
 		if (!successful_exit(check_attr.wait())) {
 			throw Error("'git check-attr' failed - is this a Git repository?");
 		}
+	}
+	if (!successful_exit(ls_files.wait())) {
+		throw Error("'git ls-files' failed - is this a Git repository?");
 	}
 
 	int				exit_status = 0;

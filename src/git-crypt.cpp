@@ -35,6 +35,7 @@
 #include "key.hpp"
 #include "gpg.hpp"
 #include "age.hpp"
+#include "sops.hpp"
 #include "parse_options.hpp"
 #include <cstring>
 #include <unistd.h>
@@ -62,6 +63,10 @@ static void print_usage (std::ostream& out)
 	out << std::endl;
 	out << "Age commands:" << std::endl;
 	out << "  add-age-recipient RECIPIENT  add an age recipient as a collaborator" << std::endl;
+	out << "  rm-age-recipient RECIPIENT   revoke age recipient access" << std::endl;
+	out << std::endl;
+	out << "SOPS integration:" << std::endl;
+	out << "  sops-config              generate .sops.yaml for structured file encryption" << std::endl;
 	out << std::endl;
 	out << "Symmetric key commands:" << std::endl;
 	out << "  export-key FILE      export this repo's symmetric key to the given file" << std::endl;
@@ -121,8 +126,12 @@ static bool help_for_command (const char* command, std::ostream& out)
 		help_status(out);
 	} else if (std::strcmp(command, "add-age-recipient") == 0) {
 		help_add_age_recipient(out);
+	} else if (std::strcmp(command, "rm-age-recipient") == 0) {
+		help_rm_age_recipient(out);
 	} else if (std::strcmp(command, "split-key") == 0) {
 		help_split_key(out);
+	} else if (std::strcmp(command, "sops-config") == 0) {
+		help_sops_config(out);
 	} else {
 		return false;
 	}
@@ -249,8 +258,14 @@ try {
 		if (std::strcmp(command, "add-age-recipient") == 0) {
 			return add_age_recipient(argc, argv);
 		}
+		if (std::strcmp(command, "rm-age-recipient") == 0) {
+			return rm_age_recipient(argc, argv);
+		}
 		if (std::strcmp(command, "split-key") == 0) {
 			return split_key(argc, argv);
+		}
+		if (std::strcmp(command, "sops-config") == 0) {
+			return sops_config(argc, argv);
 		}
 		// Plumbing commands (executed by git, not by user):
 		if (std::strcmp(command, "clean") == 0) {
@@ -279,6 +294,9 @@ try {
 	return 1;
 } catch (const Age_error& e) {
 	std::cerr << "git-crypt: Age error: " << e.message << std::endl;
+	return 1;
+} catch (const Sops_error& e) {
+	std::cerr << "git-crypt: SOPS error: " << e.message << std::endl;
 	return 1;
 } catch (const System_error& e) {
 	std::cerr << "git-crypt: System error: " << e.message() << std::endl;
