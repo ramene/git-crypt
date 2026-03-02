@@ -20,6 +20,7 @@ OBJFILES = \
     $(SRCDIR)/commands.o \
     $(SRCDIR)/crypto.o \
     $(SRCDIR)/gpg.o \
+    $(SRCDIR)/age.o \
     $(SRCDIR)/key.o \
     $(SRCDIR)/util.o \
     $(SRCDIR)/parse_options.o \
