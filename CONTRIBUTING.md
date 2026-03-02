@@ -81,10 +81,15 @@ This builds and runs the test runner at `tests/test_runner`. Always run tests be
 
 | File | Purpose |
 |---|---|
-| `src/commands.cpp` | All command implementations (init, lock, unlock, status, etc.) |
+| `src/commands.cpp` | All command implementations (init, lock, unlock, status, rotate-key, etc.) |
 | `src/crypto.cpp` | AES-256 encryption/decryption, key derivation |
 | `src/key.cpp` | Key file format and management |
 | `src/gpg.cpp` | GPG key wrapping and interaction |
+| `src/age.cpp` | Age encryption backend (age/SSH key wrapping) |
+| `src/shamir.cpp` | Shamir's Secret Sharing (GF(256) polynomial splitting) |
+| `src/sops.cpp` | SOPS bridge and .sops.yaml generation |
+| `src/audit.cpp` | Cryptographic audit trail (hash-chained logging) |
+| `src/wallet.cpp` | Wallet-based identity (Ethereum signature to age key) |
 | `src/git-crypt.cpp` | Entry point, argument parsing, command dispatch |
 | `src/parse_options.cpp` | CLI argument parsing utilities |
 | `src/util.cpp` | Shared utility functions |

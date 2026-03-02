@@ -1,7 +1,5 @@
 # Migrating from GPG to age Encryption
 
-> **DRAFT -- This feature is not yet implemented.** This document describes the planned age encryption support for git-crypt-revived. The commands and workflows below do not exist yet and are subject to change.
-
 ## Why Migrate from GPG to age?
 
 [age](https://age-encryption.org/) is a modern file encryption tool designed as a simpler replacement for GPG. Key advantages for git-crypt users:
@@ -12,22 +10,22 @@
 - **No key server dependency**: No reliance on the PGP Web of Trust or key server infrastructure.
 - **Auditable**: age has a simple, well-documented file format designed for modern cryptographic review.
 
-## Planned Workflow
+## Workflow
 
 ### Adding an age Recipient
 
 ```bash
 # Add a collaborator by their age public key
-git-crypt add-age-user age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p
+git-crypt add-age-recipient age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p
 
 # Add a collaborator by their SSH public key
-git-crypt add-age-user ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... user@host
+git-crypt add-age-recipient ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... user@host
 
 # Add from a public key file
-git-crypt add-age-user --key-file /path/to/recipient.pub
+git-crypt add-age-recipient --key-file /path/to/recipient.pub
 
 # Add to a named key (multi-key setup)
-git-crypt add-age-user -k staging age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p
+git-crypt add-age-recipient -k staging age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p
 ```
 
 ### Unlocking with age
@@ -43,21 +41,21 @@ git-crypt unlock --age --identity ~/.ssh/id_ed25519
 git-crypt unlock --age --identity /path/to/age-key.txt
 ```
 
-### How It Will Work
+### How It Works
 
-1. **Key wrapping**: The repository's symmetric AES-256 key is encrypted (wrapped) to each age recipient, similar to how it currently works with GPG. Wrapped keys are stored in `.git-crypt/keys/default/0/age/` alongside the existing GPG-wrapped keys.
+1. **Key wrapping**: The repository's symmetric AES-256 key is encrypted (wrapped) to each age recipient, similar to how it works with GPG. Wrapped keys are stored in `.git-crypt/keys/default/0/age/` alongside the existing GPG-wrapped keys.
 
-2. **SSH key support**: When an SSH public key is provided, age encrypts the symmetric key using the corresponding age-compatible algorithm. `ssh-ed25519` keys are converted to X25519 for encryption. `ssh-rsa` keys use RSA-OAEP.
+2. **SSH key support**: When an SSH public key is provided via `--ssh`, age encrypts the symmetric key using the corresponding age-compatible algorithm. `ssh-ed25519` keys are converted to X25519 for encryption. `ssh-rsa` keys use RSA-OAEP.
 
-3. **Coexistence with GPG**: age and GPG recipients can coexist on the same repository. A user only needs one method to unlock.
+3. **Coexistence with GPG**: age and GPG recipients coexist on the same repository. A user only needs one method to unlock.
 
-4. **Identity resolution**: On `unlock --age`, git-crypt will search for age identities in this order:
+4. **Identity resolution**: On `unlock --age`, git-crypt searches for age identities in this order:
    - `--identity` flag (if provided)
    - `$AGE_IDENTITY` environment variable
    - `~/.config/age/keys.txt` (default age key location)
    - SSH agent keys (via `ssh-agent`)
 
-## Migration Steps (Planned)
+## Migration Steps
 
 For an existing repository using GPG-only encryption:
 
@@ -66,8 +64,8 @@ For an existing repository using GPG-only encryption:
 git-crypt unlock
 
 # Step 2: Add age recipients for each collaborator
-git-crypt add-age-user age1...  # Alice's age key
-git-crypt add-age-user ssh-ed25519 AAAA...  # Bob's SSH key
+git-crypt add-age-recipient age1...  # Alice's age key
+git-crypt add-age-recipient ssh-ed25519 AAAA...  # Bob's SSH key
 
 # Step 3: Collaborators can now unlock with age
 git-crypt unlock --age
@@ -101,7 +99,7 @@ cat ~/.ssh/id_ed25519.pub
 # ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... user@host
 ```
 
-The repository administrator uses this public key with `add-age-user`.
+The repository administrator uses this public key with `add-age-recipient`.
 
 ## Security Considerations
 
@@ -112,4 +110,4 @@ The repository administrator uses this public key with `add-age-user`.
 
 ## Status
 
-This feature is tracked on the [project board](https://github.com/users/ramene/projects/8). Contributions and feedback are welcome via GitHub issues.
+Age encryption support is fully implemented in git-crypt-revived v0.9.0. Contributions and feedback are welcome via GitHub issues.
