@@ -1,0 +1,65 @@
+#!/bin/sh
+#
+# git-crypt pre-commit hook
+#
+# Prevents accidental commits of plaintext files that should be encrypted.
+# Install with: git-crypt install-hooks
+#
+
+# Exit on error
+set -e
+
+# Check if git-crypt is configured for this repository
+if ! git config --get-regexp '^filter\.git-crypt' >/dev/null 2>&1; then
+	# git-crypt not configured; nothing to check
+	exit 0
+fi
+
+# Get list of staged files (excluding deleted files)
+staged_files=$(git diff --cached --name-only --diff-filter=d)
+
+if [ -z "$staged_files" ]; then
+	exit 0
+fi
+
+ERRORS=0
+
+# For each staged file, check if it should be encrypted
+for file in $staged_files; do
+	# Get the filter attribute for this file
+	filter=$(git check-attr filter -- "$file" | sed 's/.*: //')
+
+	# Skip files that don't use git-crypt filter
+	case "$filter" in
+		git-crypt|git-crypt-*)
+			;;
+		*)
+			continue
+			;;
+	esac
+
+	# Check the staged blob content for the git-crypt header
+	# Encrypted files start with \0GITCRYPT\0
+	blob_id=$(git ls-files -s -- "$file" | awk '{print $2}')
+	if [ -z "$blob_id" ]; then
+		continue
+	fi
+
+	header=$(git cat-file blob "$blob_id" | head -c 10 | od -A n -t x1 | tr -d ' \n')
+	encrypted_header="00474954435259505400"  # \0GITCRYPT\0 in hex
+
+	if [ "$header" != "$encrypted_header" ]; then
+		echo "ERROR: $file should be encrypted but is staged in PLAINTEXT!" >&2
+		ERRORS=$((ERRORS + 1))
+	fi
+done
+
+if [ "$ERRORS" -gt 0 ]; then
+	echo "" >&2
+	echo "Commit rejected: $ERRORS file(s) would be committed without encryption." >&2
+	echo "This may indicate that git-crypt filters are not properly configured." >&2
+	echo "Run 'git-crypt status' to diagnose the issue." >&2
+	exit 1
+fi
+
+exit 0
