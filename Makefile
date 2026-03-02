@@ -13,22 +13,24 @@ MANDIR ?= $(PREFIX)/share/man
 ENABLE_MAN ?= no
 DOCBOOK_XSL ?= http://cdn.docbook.org/release/xsl-nons/current/manpages/docbook.xsl
 
-OBJFILES = \
-    git-crypt.o \
-    commands.o \
-    crypto.o \
-    gpg.o \
-    key.o \
-    util.o \
-    parse_options.o \
-    coprocess.o \
-    fhstream.o
+SRCDIR = src
 
-OBJFILES += crypto-openssl-11.o
+OBJFILES = \
+    $(SRCDIR)/git-crypt.o \
+    $(SRCDIR)/commands.o \
+    $(SRCDIR)/crypto.o \
+    $(SRCDIR)/gpg.o \
+    $(SRCDIR)/key.o \
+    $(SRCDIR)/util.o \
+    $(SRCDIR)/parse_options.o \
+    $(SRCDIR)/coprocess.o \
+    $(SRCDIR)/fhstream.o
+
+OBJFILES += $(SRCDIR)/crypto-openssl-11.o
 LDFLAGS += -lcrypto
 
 # Object files needed by tests (shared library code, excluding git-crypt main)
-TEST_LIB_OBJS = crypto.o crypto-openssl-11.o key.o util.o coprocess.o fhstream.o
+TEST_LIB_OBJS = $(SRCDIR)/crypto.o $(SRCDIR)/crypto-openssl-11.o $(SRCDIR)/key.o $(SRCDIR)/util.o $(SRCDIR)/coprocess.o $(SRCDIR)/fhstream.o
 TEST_SRCDIR = tests
 TEST_OBJS = $(TEST_SRCDIR)/test_main.o $(TEST_SRCDIR)/test_crypto.o $(TEST_SRCDIR)/test_key.o
 TEST_RUNNER = $(TEST_SRCDIR)/test_runner
@@ -55,8 +57,8 @@ build-bin: git-crypt
 git-crypt: $(OBJFILES)
 	$(CXX) $(CXXFLAGS) -o $@ $(OBJFILES) $(LDFLAGS)
 
-util.o: util.cpp util-unix.cpp util-win32.cpp
-coprocess.o: coprocess.cpp coprocess-unix.cpp coprocess-win32.cpp
+$(SRCDIR)/util.o: $(SRCDIR)/util.cpp $(SRCDIR)/util-unix.cpp $(SRCDIR)/util-win32.cpp
+$(SRCDIR)/coprocess.o: $(SRCDIR)/coprocess.cpp $(SRCDIR)/coprocess-unix.cpp $(SRCDIR)/coprocess-win32.cpp
 
 build-man: man/man1/git-crypt.1
 
@@ -99,7 +101,7 @@ install-man: build-man
 # Test
 #
 $(TEST_SRCDIR)/%.o: $(TEST_SRCDIR)/%.cpp
-	$(CXX) $(CXXFLAGS) -I. -I$(TEST_SRCDIR) -c -o $@ $<
+	$(CXX) $(CXXFLAGS) -I$(SRCDIR) -I$(TEST_SRCDIR) -c -o $@ $<
 
 $(TEST_RUNNER): $(TEST_OBJS) $(TEST_LIB_OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $(TEST_OBJS) $(TEST_LIB_OBJS) $(LDFLAGS)
