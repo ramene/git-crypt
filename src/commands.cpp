@@ -1808,6 +1808,182 @@ int refresh (int argc, const char** argv)
 	return 0;
 }
 
+void help_rotate_key (std::ostream& out)
+{
+	//     |--------------------------------------------------------------------------------| 80 chars
+	out << "Usage: git-crypt rotate-key [OPTIONS]" << std::endl;
+	out << std::endl;
+	out << "    -k, --key-name KEYNAME      Rotate the given key, instead of the default" << std::endl;
+	out << "    -n, --no-commit             Don't automatically commit" << std::endl;
+	out << std::endl;
+}
+int rotate_key (int argc, const char** argv)
+{
+	const char*	key_name = 0;
+	bool		no_commit = false;
+	Options_list	options;
+	options.push_back(Option_def("-k", &key_name));
+	options.push_back(Option_def("--key-name", &key_name));
+	options.push_back(Option_def("-n", &no_commit));
+	options.push_back(Option_def("--no-commit", &no_commit));
+
+	int		argi = parse_options(options, argc, argv);
+
+	if (argc - argi != 0) {
+		std::clog << "Error: git-crypt rotate-key takes no arguments" << std::endl;
+		help_rotate_key(std::clog);
+		return 2;
+	}
+
+	if (key_name) {
+		validate_key_name_or_throw(key_name);
+	}
+
+	// 1. Load the existing key file
+	Key_file		key_file;
+	load_key(key_file, key_name);
+
+	const Key_file::Entry*	old_latest = key_file.get_latest();
+	if (!old_latest) {
+		std::clog << "Error: key file is empty";
+		if (key_name) {
+			std::clog << " (key '" << key_name << "')";
+		}
+		std::clog << std::endl;
+		return 1;
+	}
+
+	uint32_t		old_version = old_latest->version;
+
+	// 2. Generate a new key version
+	key_file.generate();
+
+	const Key_file::Entry*	new_entry = key_file.get_latest();
+	if (!new_entry || new_entry->version <= old_version) {
+		std::clog << "Error: failed to generate new key version" << std::endl;
+		return 1;
+	}
+
+	std::clog << "Rotating key";
+	if (key_name) {
+		std::clog << " '" << key_name << "'";
+	}
+	std::clog << ": version " << old_version << " -> " << new_entry->version << std::endl;
+
+	// 3. Save the updated internal key file (now contains old + new versions)
+	std::string		internal_key_path(get_internal_key_path(key_name));
+	if (!key_file.store_to_file(internal_key_path.c_str())) {
+		std::clog << "Error: " << internal_key_path << ": unable to write key file" << std::endl;
+		return 1;
+	}
+
+	// 4. Re-encrypt all files for this key by staging them (clean filter uses new latest)
+	std::vector<std::string>	encrypted_files;
+	get_encrypted_files(encrypted_files, key_name);
+
+	if (!encrypted_files.empty()) {
+		std::clog << "Re-encrypting " << encrypted_files.size() << " file"
+			  << (encrypted_files.size() != 1 ? "s" : "") << " with new key..." << std::endl;
+
+		std::vector<std::string>	command;
+		command.push_back("git");
+		command.push_back("add");
+		command.push_back("--");
+		command.insert(command.end(), encrypted_files.begin(), encrypted_files.end());
+		if (!successful_exit(exec_command(command))) {
+			std::clog << "Error: 'git add' failed while re-encrypting files" << std::endl;
+			return 1;
+		}
+	}
+
+	// 5. Re-wrap the new key version for all existing GPG collaborators
+	const std::string		repo_keys_path(get_repo_keys_path());
+	const std::string		key_dir(repo_keys_path + "/" + (key_name ? key_name : "default"));
+	std::vector<std::string>	new_gpg_files;
+
+	if (access(key_dir.c_str(), F_OK) == 0) {
+		// Collect unique GPG fingerprints from all version directories
+		std::vector<std::string>	version_dirs(get_directory_contents(key_dir.c_str()));
+		std::vector<std::pair<std::string, bool> >	collab_keys;
+
+		for (std::vector<std::string>::const_iterator vd(version_dirs.begin()); vd != version_dirs.end(); ++vd) {
+			const std::string	version_path(key_dir + "/" + *vd);
+			std::vector<std::string>	entries;
+			try {
+				entries = get_directory_contents(version_path.c_str());
+			} catch (const System_error&) {
+				continue;
+			}
+			for (std::vector<std::string>::const_iterator entry(entries.begin()); entry != entries.end(); ++entry) {
+				if (entry->size() > 4 && entry->substr(entry->size() - 4) == ".gpg") {
+					const std::string	fingerprint(entry->substr(0, entry->size() - 4));
+					bool	already_listed = false;
+					for (std::vector<std::pair<std::string, bool> >::const_iterator ck(collab_keys.begin()); ck != collab_keys.end(); ++ck) {
+						if (ck->first == fingerprint) {
+							already_listed = true;
+							break;
+						}
+					}
+					if (!already_listed) {
+						collab_keys.push_back(std::make_pair(fingerprint, true));
+					}
+				}
+			}
+		}
+
+		if (!collab_keys.empty()) {
+			std::clog << "Re-wrapping key for " << collab_keys.size()
+				  << " GPG collaborator" << (collab_keys.size() != 1 ? "s" : "") << "..." << std::endl;
+
+			encrypt_repo_key(key_name, *new_entry, collab_keys, repo_keys_path, &new_gpg_files);
+		}
+	}
+
+	// 6. Stage and commit
+	std::vector<std::string>	all_new_files;
+	all_new_files.insert(all_new_files.end(), new_gpg_files.begin(), new_gpg_files.end());
+
+	if (!all_new_files.empty()) {
+		std::vector<std::string>	command;
+		command.push_back("git");
+		command.push_back("add");
+		command.push_back("--");
+		command.insert(command.end(), all_new_files.begin(), all_new_files.end());
+		if (!successful_exit(exec_command(command))) {
+			std::clog << "Error: 'git add' failed while staging GPG-wrapped keys" << std::endl;
+			return 1;
+		}
+	}
+
+	if (!no_commit && (!encrypted_files.empty() || !all_new_files.empty())) {
+		std::ostringstream	commit_message_builder;
+		commit_message_builder << "Rotate git-crypt key";
+		if (key_name) {
+			commit_message_builder << " '" << key_name << "'";
+		}
+		commit_message_builder << " to version " << new_entry->version;
+		commit_message_builder << "\n\nRe-encrypted " << encrypted_files.size() << " file"
+				       << (encrypted_files.size() != 1 ? "s" : "") << ".";
+		if (!new_gpg_files.empty()) {
+			commit_message_builder << "\nRe-wrapped key for " << new_gpg_files.size()
+					       << " GPG collaborator file" << (new_gpg_files.size() != 1 ? "s" : "") << ".";
+		}
+
+		std::vector<std::string>	command;
+		command.push_back("git");
+		command.push_back("commit");
+		command.push_back("-m");
+		command.push_back(commit_message_builder.str());
+		if (!successful_exit(exec_command(command))) {
+			std::clog << "Error: 'git commit' failed" << std::endl;
+			return 1;
+		}
+	}
+
+	std::clog << "Key rotation complete." << std::endl;
+	return 0;
+}
+
 void help_status (std::ostream& out)
 {
 	//     |--------------------------------------------------------------------------------| 80 chars
