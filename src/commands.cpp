@@ -603,8 +603,12 @@ static void load_key (Key_file& key_file, const char* key_name, const char* key_
 	} else {
 		std::ifstream		key_file_in(get_internal_key_path(key_name).c_str(), std::fstream::binary);
 		if (!key_file_in) {
-			// TODO: include key name in error message
-			throw Error("Unable to open key file - have you unlocked/initialized this repository yet?");
+			std::string	msg("Unable to open key file");
+			if (key_name) {
+				msg += std::string(" for key '") + key_name + "'";
+			}
+			msg += " - have you unlocked/initialized this repository yet?";
+			throw Error(msg);
 		}
 		key_file.load(key_file_in);
 	}
@@ -1012,8 +1016,11 @@ int init (int argc, const char** argv)
 	std::string		internal_key_path(get_internal_key_path(key_name));
 	if (access(internal_key_path.c_str(), F_OK) == 0) {
 		// TODO: add a -f option to reinitialize the repo anyways (this should probably imply a refresh)
-		// TODO: include key_name in error message
-		std::clog << "Error: this repository has already been initialized with git-crypt." << std::endl;
+		std::clog << "Error: this repository has already been initialized with git-crypt";
+		if (key_name) {
+			std::clog << " (key '" << key_name << "')";
+		}
+		std::clog << "." << std::endl;
 		return 1;
 	}
 
@@ -1281,7 +1288,11 @@ int add_gpg_user (int argc, const char** argv)
 	load_key(key_file, key_name);
 	const Key_file::Entry*		key = key_file.get_latest();
 	if (!key) {
-		std::clog << "Error: key file is empty" << std::endl;
+		std::clog << "Error: key file is empty";
+		if (key_name) {
+			std::clog << " (key '" << key_name << "')";
+		}
+		std::clog << std::endl;
 		return 1;
 	}
 
@@ -1322,9 +1333,12 @@ int add_gpg_user (int argc, const char** argv)
 
 		// git commit ...
 		if (!no_commit) {
-			// TODO: include key_name in commit message
 			std::ostringstream	commit_message_builder;
-			commit_message_builder << "Add " << collab_keys.size() << " git-crypt collaborator" << (collab_keys.size() != 1 ? "s" : "") << "\n\nNew collaborators:\n\n";
+			commit_message_builder << "Add " << collab_keys.size() << " git-crypt collaborator" << (collab_keys.size() != 1 ? "s" : "");
+			if (key_name) {
+				commit_message_builder << " for key '" << key_name << "'";
+			}
+			commit_message_builder << "\n\nNew collaborators:\n\n";
 			for (std::vector<std::pair<std::string, bool> >::const_iterator collab(collab_keys.begin()); collab != collab_keys.end(); ++collab) {
 				commit_message_builder << "    " << collab->first << '\n';
 				commit_message_builder << "        " << gpg_get_uid(collab->first) << '\n';
