@@ -985,19 +985,23 @@ void help_init (std::ostream& out)
 	out << "Usage: git-crypt init [OPTIONS]" << std::endl;
 	out << std::endl;
 	out << "    -k, --key-name KEYNAME      Initialize the given key, instead of the default" << std::endl;
+	out << "    -f, --force                 Force re-initialization (regenerate key)" << std::endl;
 	out << std::endl;
 }
 
 int init (int argc, const char** argv)
 {
 	const char*	key_name = 0;
+	bool		force = false;
 	Options_list	options;
 	options.push_back(Option_def("-k", &key_name));
 	options.push_back(Option_def("--key-name", &key_name));
+	options.push_back(Option_def("-f", &force));
+	options.push_back(Option_def("--force", &force));
 
 	int		argi = parse_options(options, argc, argv);
 
-	if (!key_name && argc - argi == 1) {
+	if (!key_name && !force && argc - argi == 1) {
 		std::clog << "Warning: 'git-crypt init' with a key file is deprecated as of git-crypt 0.4" << std::endl;
 		std::clog << "and will be removed in a future release. Please get in the habit of using" << std::endl;
 		std::clog << "'git-crypt unlock KEYFILE' instead." << std::endl;
@@ -1015,13 +1019,20 @@ int init (int argc, const char** argv)
 
 	std::string		internal_key_path(get_internal_key_path(key_name));
 	if (access(internal_key_path.c_str(), F_OK) == 0) {
-		// TODO: add a -f option to reinitialize the repo anyways (this should probably imply a refresh)
-		std::clog << "Error: this repository has already been initialized with git-crypt";
+		if (!force) {
+			std::clog << "Error: this repository has already been initialized with git-crypt";
+			if (key_name) {
+				std::clog << " (key '" << key_name << "')";
+			}
+			std::clog << "." << std::endl;
+			std::clog << "Use 'git-crypt init --force' to re-initialize with a new key." << std::endl;
+			return 1;
+		}
+		std::clog << "Warning: re-initializing git-crypt";
 		if (key_name) {
 			std::clog << " (key '" << key_name << "')";
 		}
-		std::clog << "." << std::endl;
-		return 1;
+		std::clog << " - generating new key." << std::endl;
 	}
 
 	// 1. Generate a key and install it
@@ -1786,7 +1797,7 @@ void help_status (std::ostream& out)
 	out << "    -u             Show unencrypted files only" << std::endl;
 	//out << "    -r             Show repository status only" << std::endl;
 	out << "    -f, --fix      Fix problems with the repository" << std::endl;
-	//out << "    -z             Machine-parseable output" << std::endl;
+	out << "    -z, -m         Machine-parseable output (NUL-terminated TSV)" << std::endl;
 	out << std::endl;
 }
 int status (int argc, const char** argv)
@@ -1809,6 +1820,8 @@ int status (int argc, const char** argv)
 	options.push_back(Option_def("-f", &fix_problems));
 	options.push_back(Option_def("--fix", &fix_problems));
 	options.push_back(Option_def("-z", &machine_output));
+	options.push_back(Option_def("-m", &machine_output));
+	options.push_back(Option_def("--machine", &machine_output));
 
 	int		argi = parse_options(options, argc, argv);
 
@@ -1837,9 +1850,8 @@ int status (int argc, const char** argv)
 		return 2;
 	}
 
-	if (machine_output) {
-		// TODO: implement machine-parseable output
-		std::clog << "Sorry, machine-parseable output is not yet implemented" << std::endl;
+	if (machine_output && fix_problems) {
+		std::clog << "Error: -z/-m option cannot be used with -f" << std::endl;
 		return 2;
 	}
 
@@ -1884,6 +1896,7 @@ int status (int argc, const char** argv)
 	std::vector<std::string>	files;
 	bool				attribute_errors = false;
 	bool				unencrypted_blob_errors = false;
+	bool				tamper_warnings = false;
 	unsigned int			nbr_of_fixed_blobs = 0;
 	unsigned int			nbr_of_fix_errors = 0;
 
@@ -1909,6 +1922,16 @@ int status (int argc, const char** argv)
 		if (file_attrs.first == "git-crypt" || std::strncmp(file_attrs.first.c_str(), "git-crypt-", 10) == 0) {
 			// File is encrypted
 			const bool	blob_is_unencrypted = !object_id.empty() && !check_if_blob_is_encrypted(object_id);
+			const bool	filter_ok = (file_attrs.second == file_attrs.first);
+
+			// Determine the key name from the filter attribute
+			std::string	key_name_str;
+			if (file_attrs.first == "git-crypt") {
+				key_name_str = "default";
+			} else {
+				// "git-crypt-<name>" -> "<name>"
+				key_name_str = file_attrs.first.substr(10);
+			}
 
 			if (fix_problems && blob_is_unencrypted) {
 				if (access(filename.c_str(), F_OK) != 0) {
@@ -1933,31 +1956,62 @@ int status (int argc, const char** argv)
 					}
 				}
 			} else if (!fix_problems && !show_unencrypted_only) {
-				// TODO: output the key name used to encrypt this file
-				std::cout << "    encrypted: " << filename;
-				if (file_attrs.second != file_attrs.first) {
-					// but diff filter is not properly set
-					std::cout << " *** WARNING: diff=" << file_attrs.first << " attribute not set ***";
-					attribute_errors = true;
+				if (machine_output) {
+					// NUL-terminated TSV: filename \t encrypted \t filter_ok \t key_name \0
+					std::cout << filename << '\t' << "encrypted" << '\t' << (filter_ok ? "true" : "false") << '\t' << key_name_str << '\0';
+				} else {
+					std::cout << "    encrypted: " << filename;
+					if (!filter_ok) {
+						// but diff filter is not properly set
+						std::cout << " *** WARNING: diff=" << file_attrs.first << " attribute not set ***";
+						attribute_errors = true;
+					}
+					if (blob_is_unencrypted) {
+						// File not actually encrypted
+						std::cout << " *** WARNING: staged/committed version is NOT ENCRYPTED! ***";
+						unencrypted_blob_errors = true;
+					}
+					std::cout << std::endl;
 				}
-				if (blob_is_unencrypted) {
-					// File not actually encrypted
-					std::cout << " *** WARNING: staged/committed version is NOT ENCRYPTED! ***";
-					unencrypted_blob_errors = true;
-				}
-				std::cout << std::endl;
 			}
 		} else {
-			// File not encrypted
-			if (!fix_problems && !show_encrypted_only) {
-				std::cout << "not encrypted: " << filename << std::endl;
+			// File not encrypted (per .gitattributes)
+			// Check for .gitattributes tampering: blob is encrypted but filter attribute is missing
+			const bool	blob_is_encrypted = !object_id.empty() && check_if_blob_is_encrypted(object_id);
+			if (blob_is_encrypted) {
+				// Blob is encrypted but filter attribute is missing — possible .gitattributes tampering
+				if (!fix_problems) {
+					if (machine_output) {
+						std::cout << filename << '\t' << "tampered" << '\t' << "false" << '\t' << "" << '\0';
+					} else {
+						std::cout << "*** TAMPERED: " << filename << " *** (encrypted blob but filter attribute removed from .gitattributes)" << std::endl;
+					}
+					tamper_warnings = true;
+				}
+			} else if (!fix_problems && !show_encrypted_only) {
+				if (machine_output) {
+					// NUL-terminated TSV: filename \t not_encrypted \t \t \0
+					std::cout << filename << '\t' << "not_encrypted" << '\t' << "" << '\t' << "" << '\0';
+				} else {
+					std::cout << "not encrypted: " << filename << std::endl;
+				}
 			}
 		}
 	}
 
 	int				exit_status = 0;
 
-	if (attribute_errors) {
+	if (!machine_output && tamper_warnings) {
+		std::cout << std::endl;
+		std::cout << "WARNING: .gitattributes may have been tampered with!" << std::endl;
+		std::cout << "One or more files have encrypted blobs in the repository but their" << std::endl;
+		std::cout << "git-crypt filter attribute has been removed from .gitattributes." << std::endl;
+		std::cout << "This means future modifications to these files will be committed in PLAINTEXT." << std::endl;
+		std::cout << "Please verify .gitattributes has not been maliciously modified and restore" << std::endl;
+		std::cout << "the correct filter=git-crypt diff=git-crypt attributes for affected files." << std::endl;
+		exit_status = 1;
+	}
+	if (!machine_output && attribute_errors) {
 		std::cout << std::endl;
 		std::cout << "Warning: one or more files has a git-crypt filter attribute but not a" << std::endl;
 		std::cout << "corresponding git-crypt diff attribute.  For proper 'git diff' operation" << std::endl;
@@ -1965,7 +2019,7 @@ int status (int argc, const char** argv)
 		std::cout << "Consult the git-crypt documentation for help." << std::endl;
 		exit_status = 1;
 	}
-	if (unencrypted_blob_errors) {
+	if (!machine_output && unencrypted_blob_errors) {
 		std::cout << std::endl;
 		std::cout << "Warning: one or more files is marked for encryption via .gitattributes but" << std::endl;
 		std::cout << "was staged and/or committed before the .gitattributes file was in effect." << std::endl;
