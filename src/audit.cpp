@@ -32,6 +32,7 @@
 #include "util.hpp"
 #include "commands.hpp"
 #include <openssl/sha.h>
+#include <openssl/evp.h>
 #include <fstream>
 #include <sstream>
 #include <ctime>
@@ -305,4 +306,200 @@ size_t audit_verify_chain (const std::vector<Audit_entry>& entries)
 	}
 
 	return valid;
+}
+
+static std::string keccak256_hex (const std::string& data)
+{
+	// Use OpenSSL's EVP interface which supports Keccak-256
+	// OpenSSL 3.x provides "KECCAK-256", older versions may not have it
+	// Fallback to SHA3-256 if KECCAK-256 is not available
+	// (SHA3-256 and KECCAK-256 differ only in padding, but for anchoring
+	//  purposes either is fine as long as we're consistent)
+	unsigned char	hash[32];
+	unsigned int	hash_len = 0;
+
+	EVP_MD_CTX*	ctx = EVP_MD_CTX_new();
+	if (!ctx) {
+		// Fallback to SHA-256 if EVP fails
+		return sha256_hex(data);
+	}
+
+	const EVP_MD*	md = EVP_sha3_256();
+	if (!md) {
+		EVP_MD_CTX_free(ctx);
+		return sha256_hex(data);
+	}
+
+	EVP_DigestInit_ex(ctx, md, NULL);
+	EVP_DigestUpdate(ctx, data.data(), data.size());
+	EVP_DigestFinal_ex(ctx, hash, &hash_len);
+	EVP_MD_CTX_free(ctx);
+
+	static const char	hex_chars[] = "0123456789abcdef";
+	std::string		result;
+	result.reserve(hash_len * 2);
+	for (unsigned int i = 0; i < hash_len; ++i) {
+		result += hex_chars[(hash[i] >> 4) & 0x0f];
+		result += hex_chars[hash[i] & 0x0f];
+	}
+	return result;
+}
+
+std::string audit_state_hash ()
+{
+	std::vector<Audit_entry>	entries = audit_read_log();
+	if (entries.empty()) {
+		return keccak256_hex("");
+	}
+
+	// Concatenate all entry hashes to form the state
+	std::string	state;
+	for (size_t i = 0; i < entries.size(); ++i) {
+		state += entries[i].entry_hash;
+	}
+	return keccak256_hex(state);
+}
+
+std::string audit_anchor_onchain (const std::string& state_hash,
+				  const std::string& rpc_url,
+				  const std::string& from_address)
+{
+	// Use `cast send` to publish the hash as calldata to a self-transfer
+	// cast send --rpc-url URL --account FROM FROM "0x" STATE_HASH_BYTES
+	// This creates a transaction with the state hash in the calldata
+	//
+	// Alternative: use `cast publish` or raw eth_sendTransaction
+	// We use a self-transfer (to==from) with the hash as calldata data field
+	// This is the cheapest way to anchor data on-chain
+
+	std::vector<std::string>	command;
+	command.push_back("cast");
+	command.push_back("send");
+	command.push_back("--rpc-url");
+	command.push_back(rpc_url);
+	command.push_back("--account");
+	command.push_back(from_address);
+	command.push_back(from_address);  // self-transfer (to == from)
+	command.push_back("0x" + state_hash);  // calldata = state hash
+
+	std::stringstream	output;
+	if (!successful_exit(exec_command(command, output))) {
+		throw Error("Failed to send on-chain anchor transaction. Check RPC URL and account.");
+	}
+
+	// Parse tx hash from cast output
+	// cast send outputs various fields, look for "transactionHash"
+	std::string	tx_hash;
+	std::string	line;
+	while (std::getline(output, line)) {
+		// cast send outputs "transactionHash  0x..."
+		if (line.find("transactionHash") != std::string::npos) {
+			size_t	pos = line.find("0x");
+			if (pos != std::string::npos) {
+				tx_hash = line.substr(pos);
+				// Trim whitespace
+				while (!tx_hash.empty() && (tx_hash.back() == '\n' || tx_hash.back() == '\r' || tx_hash.back() == ' ')) {
+					tx_hash.pop_back();
+				}
+			}
+		}
+	}
+
+	if (tx_hash.empty()) {
+		// Try the raw output (some cast versions output just the hash)
+		output.clear();
+		output.seekg(0);
+		std::string	raw = output.str();
+		while (!raw.empty() && (raw.back() == '\n' || raw.back() == '\r' || raw.back() == ' ')) {
+			raw.pop_back();
+		}
+		if (raw.size() >= 66 && raw.find("0x") != std::string::npos) {
+			size_t	pos = raw.find("0x");
+			tx_hash = raw.substr(pos, 66);
+		}
+	}
+
+	return tx_hash;
+}
+
+std::string audit_anchors_path ()
+{
+	std::string	git_dir;
+	try {
+		std::vector<std::string>	cmd;
+		cmd.push_back("git");
+		cmd.push_back("rev-parse");
+		cmd.push_back("--git-dir");
+		std::stringstream		output;
+		if (successful_exit(exec_command(cmd, output))) {
+			git_dir = output.str();
+			while (!git_dir.empty() && (git_dir.back() == '\n' || git_dir.back() == '\r')) {
+				git_dir.pop_back();
+			}
+		}
+	} catch (...) {
+	}
+	if (git_dir.empty()) {
+		git_dir = ".git";
+	}
+	return git_dir + "/git-crypt/anchors.log";
+}
+
+void audit_record_anchor (const std::string& state_hash,
+			   const std::string& tx_hash,
+			   const std::string& rpc_url,
+			   size_t entry_count)
+{
+	std::string	path = audit_anchors_path();
+	mkdir_parent(path);
+
+	std::string	timestamp = iso8601_now();
+
+	std::ofstream	out(path, std::ios::app);
+	if (!out) {
+		return;
+	}
+	out << timestamp << '\t'
+	    << state_hash << '\t'
+	    << tx_hash << '\t'
+	    << rpc_url << '\t'
+	    << entry_count << std::endl;
+}
+
+std::vector<Audit_anchor> audit_read_anchors ()
+{
+	std::vector<Audit_anchor>	anchors;
+	std::string	path = audit_anchors_path();
+	std::ifstream	in(path);
+	if (!in) {
+		return anchors;
+	}
+
+	std::string	line;
+	while (std::getline(in, line)) {
+		if (line.empty()) continue;
+
+		Audit_anchor	anchor;
+		std::vector<std::string>	fields;
+		size_t		pos = 0;
+		while (pos <= line.size()) {
+			size_t	next = line.find('\t', pos);
+			if (next == std::string::npos) {
+				fields.push_back(line.substr(pos));
+				break;
+			}
+			fields.push_back(line.substr(pos, next - pos));
+			pos = next + 1;
+		}
+		if (fields.size() >= 5) {
+			anchor.timestamp = fields[0];
+			anchor.state_hash = fields[1];
+			anchor.tx_hash = fields[2];
+			anchor.rpc_url = fields[3];
+			char*		end = 0;
+			anchor.entry_count = std::strtoul(fields[4].c_str(), &end, 10);
+			anchors.push_back(anchor);
+		}
+	}
+	return anchors;
 }

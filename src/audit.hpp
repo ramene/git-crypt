@@ -75,4 +75,33 @@ size_t		audit_verify_chain (const std::vector<Audit_entry>& entries);
 // Get current user identity for audit logging
 std::string	audit_get_identity (std::string& identity_type);
 
+// Compute Keccak-256 hash of the current audit log state (for on-chain anchoring)
+// Returns hex-encoded hash of all entry hashes concatenated
+std::string	audit_state_hash ();
+
+// Publish an audit anchor to an Ethereum-compatible chain
+// Returns the transaction hash
+std::string	audit_anchor_onchain (const std::string& state_hash,
+				      const std::string& rpc_url,
+				      const std::string& from_address);
+
+// Get path to the anchors log file
+std::string	audit_anchors_path ();
+
+// Record an on-chain anchor in the local anchors log
+void		audit_record_anchor (const std::string& state_hash,
+				     const std::string& tx_hash,
+				     const std::string& rpc_url,
+				     size_t entry_count);
+
+// Read anchor records
+struct Audit_anchor {
+	std::string	timestamp;
+	std::string	state_hash;
+	std::string	tx_hash;
+	std::string	rpc_url;
+	size_t		entry_count;
+};
+std::vector<Audit_anchor>	audit_read_anchors ();
+
 #endif

@@ -78,6 +78,7 @@ static void print_usage (std::ostream& out)
 	out << "Audit commands:" << std::endl;
 	out << "  audit-log                display cryptographic audit trail" << std::endl;
 	out << "  verify-audit             verify audit log hash chain integrity" << std::endl;
+	out << "  anchor-audit             publish audit hash to blockchain" << std::endl;
 	out << std::endl;
 	out << "Symmetric key commands:" << std::endl;
 	out << "  export-key FILE      export this repo's symmetric key to the given file" << std::endl;
@@ -151,6 +152,8 @@ static bool help_for_command (const char* command, std::ostream& out)
 		help_verify_audit(out);
 	} else if (std::strcmp(command, "add-wallet-recipient") == 0) {
 		help_add_wallet_recipient(out);
+	} else if (std::strcmp(command, "anchor-audit") == 0) {
+		help_anchor_audit(out);
 	} else {
 		return false;
 	}
@@ -297,6 +300,9 @@ try {
 		}
 		if (std::strcmp(command, "add-wallet-recipient") == 0) {
 			return add_wallet_recipient(argc, argv);
+		}
+		if (std::strcmp(command, "anchor-audit") == 0) {
+			return anchor_audit(argc, argv);
 		}
 		// Plumbing commands (executed by git, not by user):
 		if (std::strcmp(command, "clean") == 0) {
