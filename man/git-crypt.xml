@@ -472,13 +472,66 @@
 	</refsect1>
 	-->
 
-	<!-- TODO: examples section
 	<refsect1>
 		<title>Examples</title>
 
-		<para>Hello world?</para>
+		<para>
+			<emphasis role="bold">Initialize a repository and encrypt files:</emphasis>
+		</para>
+		<screen>$ cd my-repo
+$ git-crypt init
+Generating key...
+$ echo 'secret.conf filter=git-crypt diff=git-crypt' &gt;&gt; .gitattributes
+$ echo '*.key filter=git-crypt diff=git-crypt' &gt;&gt; .gitattributes
+$ git add .gitattributes
+$ git commit -m "Configure git-crypt encryption"
+$ echo "API_KEY=s3cret" &gt; secret.conf
+$ git add secret.conf
+$ git commit -m "Add encrypted configuration"</screen>
+
+		<para>
+			<emphasis role="bold">Add a GPG collaborator:</emphasis>
+		</para>
+		<screen>$ git-crypt add-gpg-user alice@example.com
+$ git-crypt add-gpg-user --trusted bob@example.com
+$ git-crypt add-gpg-user -k staging deploy@example.com</screen>
+
+		<para>
+			<emphasis role="bold">Lock and unlock a repository:</emphasis>
+		</para>
+		<screen># Lock the repo (encrypt all files in the working copy)
+$ git-crypt lock
+
+# Unlock with GPG (requires your private key)
+$ git-crypt unlock
+
+# Unlock with a symmetric key file
+$ git-crypt unlock /path/to/keyfile</screen>
+
+		<para>
+			<emphasis role="bold">Check encryption status:</emphasis>
+		</para>
+		<screen># Show all files and their encryption status
+$ git-crypt status
+
+# Show only encrypted files
+$ git-crypt status -e
+
+# Fix files that should be encrypted but aren't
+$ git-crypt status -f</screen>
+
+		<para>
+			<emphasis role="bold">Export and share a symmetric key:</emphasis>
+		</para>
+		<screen># Export the default key
+$ git-crypt export-key /path/to/shared-key
+
+# Export a named key
+$ git-crypt export-key -k staging /path/to/staging-key
+
+# A collaborator can then unlock with the exported key
+$ git-crypt unlock /path/to/shared-key</screen>
 	</refsect1>
-	-->
 
 	<refsect1>
 		<title>See Also</title>
