@@ -1,0 +1,23 @@
+# Development environment for git-crypt-revived
+#
+# Standalone build (recommended, always works):
+#   docker build -f Dockerfile.dev -t git-crypt-dev .
+#   docker run --rm git-crypt-dev
+#
+# Development with volume mount (edit on host, build in container):
+#   docker compose run --rm dev bash
+#   # Then inside the container: make clean && make
+#
+# Note: On macOS with Docker Desktop, bind-mounted volume builds may encounter
+# filesystem sync issues with object files. Use the standalone build above
+# or an interactive shell session for reliable results.
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    volumes:
+      # Mount source directory so edits are reflected immediately
+      - .:/workspace
+    working_dir: /workspace
+    command: bash
