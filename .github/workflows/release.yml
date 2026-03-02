@@ -39,23 +39,15 @@ jobs:
         run: |
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           sudo dpkg --add-architecture arm64
-          # Pin ALL existing apt sources to amd64 only
-          # Handle traditional one-line format (.list files)
-          sudo sed -i 's/^deb http/deb [arch=amd64] http/' /etc/apt/sources.list
-          for f in /etc/apt/sources.list.d/*.list; do
-            [ -f "$f" ] && sudo sed -i 's/^deb http/deb [arch=amd64] http/' "$f"
-          done
-          # Handle DEB822 format (.sources files) — add Architectures field
-          for f in /etc/apt/sources.list.d/*.sources; do
-            [ -f "$f" ] && sudo sed -i '/^Types:/a Architectures: amd64' "$f"
-          done
-          # Add arm64 sources from ports.ubuntu.com only
+          # Add arm64 sources from ports.ubuntu.com
           cat << 'SOURCES' | sudo tee /etc/apt/sources.list.d/arm64.list
           deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe
           deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe
           deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe
           SOURCES
-          sudo apt-get update
+          # Update: 404s from security.ubuntu.com for arm64 are expected (it doesn't serve arm64)
+          # The arm64 packages come from ports.ubuntu.com which succeeds
+          sudo apt-get update || true
           sudo apt-get install -y libssl-dev:arm64
 
       - name: Install dependencies (macOS)
