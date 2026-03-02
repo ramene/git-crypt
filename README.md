@@ -1,162 +1,129 @@
-git-crypt - transparent file encryption in git
-==============================================
+# git-crypt-revived
 
-git-crypt enables transparent encryption and decryption of files in a
-git repository.  Files which you choose to protect are encrypted when
-committed, and decrypted when checked out.  git-crypt lets you freely
-share a repository containing a mix of public and private content.
-git-crypt gracefully degrades, so developers without the secret key can
-still clone and commit to a repository with encrypted files.  This lets
-you store your secret material (such as keys or passwords) in the same
-repository as your code, without requiring you to lock down your entire
-repository.
+**Transparent file encryption in Git** -- a modernized fork of [AGWA/git-crypt](https://github.com/AGWA/git-crypt).
 
-git-crypt was written by [Andrew Ayer](https://www.agwa.name) (agwa@andrewayer.name).
-For more information, see <https://www.agwa.name/projects/git-crypt>.
+git-crypt enables transparent encryption and decryption of files in a git repository. Files which you choose to protect are encrypted when committed, and decrypted when checked out. git-crypt lets you freely share a repository containing a mix of public and private content. Developers without the secret key can still clone and commit to a repository with encrypted files, so you can store secrets alongside your code without locking down your entire repository.
 
-Building git-crypt
-------------------
-See the [INSTALL.md](INSTALL.md) file.
+## What's Different in This Fork
 
+This fork picks up where AGWA/git-crypt left off (v0.8.0) and adds:
 
-Using git-crypt
----------------
+- Modernized CI pipeline (GitHub Actions with multi-platform build matrix)
+- CMake build system alongside the original Makefile
+- Docker-based development environment
+- Catch2 unit test framework with crypto and key roundtrip tests
+- Source reorganization into `src/` directory structure
 
-Configure a repository to use git-crypt:
+### Roadmap
 
-    cd repo
-    git-crypt init
+The following features are planned but **not yet implemented**:
 
-Specify files to encrypt by creating a .gitattributes file:
+- **age encryption support** -- use [age](https://age-encryption.org/) and SSH keys as an alternative to GPG
+- **SOPS integration** -- bridge to Mozilla SOPS for structured file encryption
+- **2FA via YubiKey / Shamir's Secret Sharing** -- hardware-backed two-factor authentication
+- **Wallet-based identity and access control** -- decentralized identity for key management
+- **Cryptographic audit trails** -- verifiable log of encryption/decryption events
+- **Signed access logging** -- tamper-evident access records
 
-    secretfile filter=git-crypt diff=git-crypt
-    *.key filter=git-crypt diff=git-crypt
-    secretdir/** filter=git-crypt diff=git-crypt
+## Installation
 
-Like a .gitignore file, it can match wildcards and should be checked into
-the repository.  See below for more information about .gitattributes.
-Make sure you don't accidentally encrypt the .gitattributes file itself
-(or other git files like .gitignore or .gitmodules).  Make sure your
-.gitattributes rules are in place *before* you add sensitive files, or
-those files won't be encrypted!
+### Build from Source
 
-Share the repository with others (or with yourself) using GPG:
+**Requirements**: C++11 compiler (gcc 4.9+ or clang), OpenSSL, GNU Make
 
-    git-crypt add-gpg-user USER_ID
+```bash
+git clone https://github.com/appmaestro-ai/git-crypt.git
+cd git-crypt
+make
+make install PREFIX=/usr/local
+```
 
-`USER_ID` can be a key ID, a full fingerprint, an email address, or
-anything else that uniquely identifies a public key to GPG (see "HOW TO
-SPECIFY A USER ID" in the gpg man page).  Note: `git-crypt add-gpg-user`
-will add and commit a GPG-encrypted key file in the .git-crypt directory
-of the root of your repository.
+For macOS with Homebrew OpenSSL:
 
-Alternatively, you can export a symmetric secret key, which you must
-securely convey to collaborators (GPG is not required, and no files
-are added to your repository):
+```bash
+OPENSSL_PREFIX="$(brew --prefix openssl)"
+make CXXFLAGS="-Wall -pedantic -Wno-long-long -O2 -std=c++11 -I${OPENSSL_PREFIX}/include" \
+     LDFLAGS="-L${OPENSSL_PREFIX}/lib -lcrypto"
+```
 
-    git-crypt export-key /path/to/key
+See [INSTALL.md](INSTALL.md) for detailed build instructions including CMake and Docker options.
 
-After cloning a repository with encrypted files, unlock with GPG:
+### Homebrew (future)
 
-    git-crypt unlock
+Homebrew formula support is planned for a future release.
 
-Or with a symmetric key:
+## Quick Start
 
-    git-crypt unlock /path/to/key
+```bash
+# 1. Initialize git-crypt in your repository
+cd my-repo
+git-crypt init
 
-That's all you need to do - after git-crypt is set up (either with
-`git-crypt init` or `git-crypt unlock`), you can use git normally -
-encryption and decryption happen transparently.
+# 2. Specify which files to encrypt via .gitattributes
+echo 'secrets/** filter=git-crypt diff=git-crypt' >> .gitattributes
+echo '*.key filter=git-crypt diff=git-crypt' >> .gitattributes
+git add .gitattributes
+git commit -m "Configure git-crypt"
 
-Current Status
---------------
+# 3. Add files -- they are encrypted transparently on commit
+echo "API_KEY=s3cret" > secrets/config.env
+git add secrets/config.env
+git commit -m "Add encrypted secrets"
 
-The latest version of git-crypt is [0.8.0](NEWS.md), released on
-2025-09-23.  git-crypt aims to be bug-free and reliable, meaning it
-shouldn't crash, malfunction, or expose your confidential data.
-However, it has not yet reached maturity, meaning it is not as
-documented, featureful, or easy-to-use as it should be.  Additionally,
-there may be backwards-incompatible changes introduced before version
-1.0.
+# 4. Share access via GPG
+git-crypt add-gpg-user alice@example.com
 
-Security
---------
+# 5. Or export a symmetric key to share manually
+git-crypt export-key /path/to/shared-key
+```
 
-git-crypt is more secure than other transparent git encryption systems.
-git-crypt encrypts files using AES-256 in CTR mode with a synthetic IV
-derived from the SHA-1 HMAC of the file.  This mode of operation is
-provably semantically secure under deterministic chosen-plaintext attack.
-That means that although the encryption is deterministic (which is
-required so git can distinguish when a file has and hasn't changed),
-it leaks no information beyond whether two files are identical or not.
-Other proposals for transparent git encryption use ECB or CBC with a
-fixed IV.  These systems are not semantically secure and leak information.
+After a collaborator clones the repository:
 
-Limitations
------------
+```bash
+# Unlock with GPG (automatic key selection)
+git-crypt unlock
 
-git-crypt relies on git filters, which were not designed with encryption
-in mind.  As such, git-crypt is not the best tool for encrypting most or
-all of the files in a repository. Where git-crypt really shines is where
-most of your repository is public, but you have a few files (perhaps
-private keys named *.key, or a file with API credentials) which you
-need to encrypt.  For encrypting an entire repository, consider using a
-system like [git-remote-gcrypt](https://spwhitton.name/tech/code/git-remote-gcrypt/)
-instead.  (Note: no endorsement is made of git-remote-gcrypt's security.)
+# Or unlock with a symmetric key
+git-crypt unlock /path/to/shared-key
+```
 
-git-crypt does not encrypt file names, commit messages, symlink targets,
-gitlinks, or other metadata.
+## Command Reference
 
-git-crypt does not hide when a file does or doesn't change, the length
-of a file, or the fact that two files are identical (see "Security"
-section above).
+| Command | Description |
+|---|---|
+| `git-crypt init` | Generate a key and prepare the repo for encryption |
+| `git-crypt init -k NAME` | Initialize a named key for multi-key setups |
+| `git-crypt status` | Show encryption status of all files |
+| `git-crypt status -e` | Show only encrypted files |
+| `git-crypt status -f` | Fix files that should be encrypted but aren't |
+| `git-crypt lock` | Encrypt all files in the working copy |
+| `git-crypt unlock` | Decrypt the repo using GPG |
+| `git-crypt unlock KEYFILE` | Decrypt the repo using a symmetric key file |
+| `git-crypt add-gpg-user USER` | Grant a GPG user access to encrypted files |
+| `git-crypt export-key FILE` | Export the symmetric key to a file |
+| `git-crypt help` | Show help information |
+| `git-crypt version` | Print the installed version |
 
-git-crypt does not support revoking access to an encrypted repository
-which was previously granted. This applies to both multi-user GPG
-mode (there's no del-gpg-user command to complement add-gpg-user)
-and also symmetric key mode (there's no support for rotating the key).
-This is because it is an inherently complex problem in the context
-of historical data. For example, even if a key was rotated at one
-point in history, a user having the previous key can still access
-previous repository history. This problem is discussed in more detail in
-<https://github.com/AGWA/git-crypt/issues/47>.
+## Security
 
-Files encrypted with git-crypt are not compressible.  Even the smallest
-change to an encrypted file requires git to store the entire changed file,
-instead of just a delta.
+git-crypt encrypts files using AES-256 in CTR mode with a synthetic IV derived from the SHA-1 HMAC of the file. This is provably semantically secure under deterministic chosen-plaintext attack -- it leaks no information beyond whether two files are identical.
 
-Although git-crypt protects individual file contents with a SHA-1
-HMAC, git-crypt cannot be used securely unless the entire repository is
-protected against tampering (an attacker who can mutate your repository
-can alter your .gitattributes file to disable encryption).  If necessary,
-use git features such as signed tags instead of relying solely on
-git-crypt for integrity.
+## Limitations
 
-Files encrypted with git-crypt cannot be patched with git-apply, unless
-the patch itself is encrypted.  To generate an encrypted patch, use `git
-diff --no-textconv --binary`.  Alternatively, you can apply a plaintext
-patch outside of git using the patch command.
+- Not designed for encrypting most or all files in a repository. Best suited for a few sensitive files (keys, credentials) in an otherwise public repo.
+- Does not encrypt file names, commit messages, symlink targets, or other metadata.
+- Does not support revoking access to previously granted users (no key rotation).
+- Encrypted files are not compressible by git's delta compression.
+- Not compatible with some third-party git GUIs.
 
-git-crypt does not work reliably with some third-party git GUIs, such
-as [Atlassian SourceTree](https://jira.atlassian.com/browse/SRCTREE-2511)
-and GitHub for Mac.  Files might be left in an unencrypted state.
+See the man page (`git-crypt help`) for full details.
 
-Gitattributes File
-------------------
+## Contributing
 
-The .gitattributes file is documented in the gitattributes(5) man page.
-The file pattern format is the same as the one used by .gitignore,
-as documented in the gitignore(5) man page, with the exception that
-specifying merely a directory (e.g. `/dir/`) is *not* sufficient to
-encrypt all files beneath it.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, code style, testing, and how to submit pull requests.
 
-Also note that the pattern `dir/*` does not match files under
-sub-directories of dir/.  To encrypt an entire sub-tree dir/, use `dir/**`:
+## License
 
-    dir/** filter=git-crypt diff=git-crypt
+git-crypt-revived is licensed under the [GNU General Public License v3](COPYING).
 
-The .gitattributes file must not be encrypted, so make sure wildcards don't
-match it accidentally.  If necessary, you can exclude .gitattributes from
-encryption like this:
-
-    .gitattributes !filter !diff
+Originally written by [Andrew Ayer](https://www.agwa.name) (agwa@andrewayer.name). See [AUTHORS](AUTHORS) and [THANKS.md](THANKS.md) for contributors.
