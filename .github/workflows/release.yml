@@ -23,9 +23,6 @@ jobs:
             arch: arm64
             runner: ubuntu-22.04
           - os: macos
-            arch: x86_64
-            runner: macos-13
-          - os: macos
             arch: arm64
             runner: macos-14
 
@@ -42,14 +39,22 @@ jobs:
         run: |
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           sudo dpkg --add-architecture arm64
-          # Add all jammy suites for arm64 (base + updates + security)
+          # Pin ALL existing apt sources to amd64 only
+          # Handle traditional one-line format (.list files)
+          sudo sed -i 's/^deb http/deb [arch=amd64] http/' /etc/apt/sources.list
+          for f in /etc/apt/sources.list.d/*.list; do
+            [ -f "$f" ] && sudo sed -i 's/^deb http/deb [arch=amd64] http/' "$f"
+          done
+          # Handle DEB822 format (.sources files) — add Architectures field
+          for f in /etc/apt/sources.list.d/*.sources; do
+            [ -f "$f" ] && sudo sed -i '/^Types:/a Architectures: amd64' "$f"
+          done
+          # Add arm64 sources from ports.ubuntu.com only
           cat << 'SOURCES' | sudo tee /etc/apt/sources.list.d/arm64.list
           deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe
           deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe
           deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe
           SOURCES
-          # Pin amd64 sources so they don't pull arm64
-          sudo sed -i 's/^deb http/deb [arch=amd64] http/' /etc/apt/sources.list
           sudo apt-get update
           sudo apt-get install -y libssl-dev:arm64
 
