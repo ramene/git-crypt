@@ -1599,16 +1599,18 @@ void help_export_key (std::ostream& out)
 	out << "Usage: git-crypt export-key [OPTIONS] FILENAME" << std::endl;
 	out << std::endl;
 	out << "    -k, --key-name KEYNAME      Export the given key, instead of the default" << std::endl;
+	out << "    --version N                 Export only the specified key version" << std::endl;
 	out << std::endl;
 	out << "When FILENAME is -, export to standard out." << std::endl;
 }
 int export_key (int argc, const char** argv)
 {
-	// TODO: provide options to export only certain key versions
 	const char*		key_name = 0;
+	const char*		version_str = 0;
 	Options_list		options;
 	options.push_back(Option_def("-k", &key_name));
 	options.push_back(Option_def("--key-name", &key_name));
+	options.push_back(Option_def("--version", &version_str));
 
 	int			argi = parse_options(options, argc, argv);
 
@@ -1620,6 +1622,26 @@ int export_key (int argc, const char** argv)
 
 	Key_file		key_file;
 	load_key(key_file, key_name);
+
+	// If a specific version was requested, create a key file with only that version
+	if (version_str) {
+		char*		end = 0;
+		unsigned long	ver = std::strtoul(version_str, &end, 10);
+		if (end == version_str || *end != '\0') {
+			std::clog << "Error: invalid version number: " << version_str << std::endl;
+			return 2;
+		}
+		uint32_t		version = static_cast<uint32_t>(ver);
+		const Key_file::Entry*	entry = key_file.get(version);
+		if (!entry) {
+			std::clog << "Error: key version " << version << " not found" << std::endl;
+			return 1;
+		}
+		Key_file	filtered_key_file;
+		filtered_key_file.set_key_name(key_file.get_key_name());
+		filtered_key_file.add(*entry);
+		key_file = filtered_key_file;
+	}
 
 	const char*		out_file_name = argv[argi];
 
