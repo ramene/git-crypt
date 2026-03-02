@@ -22,6 +22,7 @@ OBJFILES = \
     $(SRCDIR)/gpg.o \
     $(SRCDIR)/age.o \
     $(SRCDIR)/shamir.o \
+    $(SRCDIR)/sops.o \
     $(SRCDIR)/key.o \
     $(SRCDIR)/util.o \
     $(SRCDIR)/parse_options.o \
