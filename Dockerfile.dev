@@ -1,0 +1,34 @@
+# Development environment for git-crypt-revived
+# Usage: docker build -f Dockerfile.dev -t git-crypt-dev .
+#        docker run --rm -v $(pwd):/workspace git-crypt-dev
+FROM ubuntu:22.04
+
+# Avoid interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install build dependencies:
+#   build-essential - gcc/g++ toolchain and make
+#   libssl-dev      - OpenSSL libcrypto headers (required by crypto-openssl-11.cpp)
+#   cmake           - For future CMake build support
+#   git             - Required for git-crypt integration testing
+#   xsltproc        - Optional: builds man pages (ENABLE_MAN=yes)
+#   docbook-xsl     - Optional: XSL stylesheets for man page generation
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    g++ \
+    make \
+    cmake \
+    libssl-dev \
+    git \
+    xsltproc \
+    docbook-xsl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+# Copy source files for standalone builds (docker build + run)
+# For development, docker-compose.yml overrides with a volume mount
+COPY . .
+
+# Default: build the project
+CMD ["make"]

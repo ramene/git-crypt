@@ -1,0 +1,23 @@
+# Build artifacts
+*.o
+git-crypt
+build/
+
+# Git directory (large, not needed in build context)
+.git/
+
+# Docker files (prevent recursive context)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Editor/IDE files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Claude config
+.claude/
+CLAUDE*.md
