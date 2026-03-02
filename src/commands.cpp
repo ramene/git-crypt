@@ -33,9 +33,12 @@
 #include "util.hpp"
 #include "key.hpp"
 #include "gpg.hpp"
+#include "age.hpp"
 #include "parse_options.hpp"
 #include "coprocess.hpp"
 #include <unistd.h>
+#include <sys/stat.h>
+#include <sys/stat.h>
 #include <stdint.h>
 #include <algorithm>
 #include <string>
@@ -679,35 +682,6 @@ static uint32_t get_latest_key_version (const std::string& key_dir_path)
 	return latest_version;
 }
 
-static bool decrypt_repo_keys (std::vector<Key_file>& key_files, const std::vector<std::string>& secret_keys, const std::string& keys_path)
-{
-	bool				successful = false;
-	std::vector<std::string>	dirents;
-
-	if (access(keys_path.c_str(), F_OK) == 0) {
-		dirents = get_directory_contents(keys_path.c_str());
-	}
-
-	for (std::vector<std::string>::const_iterator dirent(dirents.begin()); dirent != dirents.end(); ++dirent) {
-		const char*		key_name = 0;
-		if (*dirent != "default") {
-			if (!validate_key_name(dirent->c_str())) {
-				continue;
-			}
-			key_name = dirent->c_str();
-		}
-
-		std::string		key_dir_path(keys_path + "/" + *dirent);
-		uint32_t		key_version = get_latest_key_version(key_dir_path);
-
-		Key_file	key_file;
-		if (decrypt_repo_key(key_file, key_name, key_version, secret_keys, keys_path)) {
-			key_files.push_back(key_file);
-			successful = true;
-		}
-	}
-	return successful;
-}
 
 static void encrypt_repo_key (const char* key_name, const Key_file::Entry& key, const std::vector<std::pair<std::string, bool> >& collab_keys, const std::string& keys_path, std::vector<std::string>* new_files)
 {
@@ -732,6 +706,70 @@ static void encrypt_repo_key (const char* key_name, const Key_file::Entry& key, 
 
 		mkdir_parent(path);
 		gpg_encrypt_to_file(path, fingerprint, key_is_trusted, key_file_data.data(), key_file_data.size());
+		new_files->push_back(path);
+	}
+}
+
+// Try to decrypt a repo key using age (try all .age files in the version directory)
+static bool decrypt_repo_key_age (Key_file& key_file, const char* key_name, uint32_t key_version, const std::string& keys_path)
+{
+	std::ostringstream	dir_builder;
+	dir_builder << keys_path << '/' << (key_name ? key_name : "default") << '/' << key_version;
+	std::string		version_dir(dir_builder.str());
+
+	if (access(version_dir.c_str(), F_OK) != 0) {
+		return false;
+	}
+
+	std::vector<std::string>	dirents(get_directory_contents(version_dir.c_str()));
+	for (std::vector<std::string>::const_iterator entry(dirents.begin()); entry != dirents.end(); ++entry) {
+		// Look for .age files
+		if (entry->size() > 4 && entry->substr(entry->size() - 4) == ".age") {
+			std::string		path(version_dir + "/" + *entry);
+			std::stringstream	decrypted_contents;
+			if (age_decrypt_from_file(path, decrypted_contents)) {
+				Key_file		this_version_key_file;
+				this_version_key_file.load(decrypted_contents);
+				const Key_file::Entry*	this_version_entry = this_version_key_file.get(key_version);
+				if (!this_version_entry) {
+					throw Error("Age-encrypted keyfile is malformed because it does not contain expected key version");
+				}
+				if (!same_key_name(key_name, this_version_key_file.get_key_name())) {
+					throw Error("Age-encrypted keyfile is malformed because it does not contain expected key name");
+				}
+				key_file.set_key_name(key_name);
+				key_file.add(*this_version_entry);
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+// Encrypt a repo key for a list of age recipients
+static void encrypt_repo_key_age (const char* key_name, const Key_file::Entry& key, const std::vector<std::string>& recipients, const std::string& keys_path, std::vector<std::string>* new_files)
+{
+	std::string	key_file_data;
+	{
+		Key_file this_version_key_file;
+		this_version_key_file.set_key_name(key_name);
+		this_version_key_file.add(key);
+		key_file_data = this_version_key_file.store_to_string();
+	}
+
+	for (std::vector<std::string>::const_iterator recipient(recipients.begin()); recipient != recipients.end(); ++recipient) {
+		std::string		hash(age_recipient_hash(*recipient));
+		std::ostringstream	path_builder;
+		path_builder << keys_path << '/' << (key_name ? key_name : "default") << '/' << key.version << '/' << hash << ".age";
+		std::string		path(path_builder.str());
+
+		if (access(path.c_str(), F_OK) == 0) {
+			continue;
+		}
+
+		mkdir_parent(path);
+		age_encrypt_to_file(path, *recipient, key_file_data.data(), key_file_data.size());
 		new_files->push_back(path);
 	}
 }
@@ -1056,11 +1094,25 @@ int init (int argc, const char** argv)
 void help_unlock (std::ostream& out)
 {
 	//     |--------------------------------------------------------------------------------| 80 chars
-	out << "Usage: git-crypt unlock" << std::endl;
-	out << "   or: git-crypt unlock KEY_FILE ..." << std::endl;
+	out << "Usage: git-crypt unlock [OPTIONS]" << std::endl;
+	out << "   or: git-crypt unlock [OPTIONS] KEY_FILE ..." << std::endl;
+	out << std::endl;
+	out << "    -k, --key-name KEYNAME   Unlock only the given key, instead of all keys" << std::endl;
+	out << std::endl;
 }
 int unlock (int argc, const char** argv)
 {
+	const char*	key_name_filter = 0;
+	Options_list	options;
+	options.push_back(Option_def("-k", &key_name_filter));
+	options.push_back(Option_def("--key-name", &key_name_filter));
+
+	int		argi = parse_options(options, argc, argv);
+
+	if (key_name_filter) {
+		validate_key_name_or_throw(key_name_filter);
+	}
+
 	// 1. Make sure working directory is clean (ignoring untracked files)
 	// We do this because we check out files later, and we don't want the
 	// user to lose any changes.  (TODO: only care if encrypted files are
@@ -1078,11 +1130,11 @@ int unlock (int argc, const char** argv)
 
 	// 2. Load the key(s)
 	std::vector<Key_file>	key_files;
-	if (argc > 0) {
+	if (argc - argi > 0) {
 		// Read from the symmetric key file(s)
 
-		for (int argi = 0; argi < argc; ++argi) {
-			const char*	symmetric_key_file = argv[argi];
+		for (int i = argi; i < argc; ++i) {
+			const char*	symmetric_key_file = argv[i];
 			Key_file	key_file;
 
 			try {
@@ -1105,20 +1157,88 @@ int unlock (int argc, const char** argv)
 				return 1;
 			}
 
+			// If --key-name filter is set, skip keys that don't match
+			if (key_name_filter && !same_key_name(key_name_filter, key_file.get_key_name())) {
+				continue;
+			}
 			key_files.push_back(key_file);
 		}
 	} else {
-		// Decrypt GPG key from root of repo
+		// Decrypt key from root of repo (try GPG first, then age)
 		std::string			repo_keys_path(get_repo_keys_path());
-		std::vector<std::string>	gpg_secret_keys(gpg_list_secret_keys());
-		// TODO: command-line option to specify the precise secret key to use
-		// TODO: command line option to only unlock specific key instead of all of them
-		// TODO: avoid decrypting repo keys which are already unlocked in the .git directory
-		if (!decrypt_repo_keys(key_files, gpg_secret_keys, repo_keys_path)) {
-			std::clog << "Error: no GPG secret key available to unlock this repository." << std::endl;
-			std::clog << "To unlock with a shared symmetric key instead, specify the path to the symmetric key as an argument to 'git-crypt unlock'." << std::endl;
-			// TODO std::clog << "To see a list of GPG keys authorized to unlock this repository, run 'git-crypt ls-gpg-users'." << std::endl;
-			return 1;
+
+		// Try to get GPG secret keys (may fail if GPG is not installed)
+		std::vector<std::string>	gpg_secret_keys;
+		bool				gpg_available = true;
+		try {
+			gpg_secret_keys = gpg_list_secret_keys();
+		} catch (...) {
+			gpg_available = false;
+		}
+
+		if (key_name_filter) {
+			// Selective unlock: only decrypt the specified key
+			std::string		key_dir_path(repo_keys_path + "/" + key_name_filter);
+			uint32_t		key_version = get_latest_key_version(key_dir_path);
+
+			Key_file	key_file;
+			bool		decrypted = false;
+
+			// Try GPG first
+			if (gpg_available) {
+				decrypted = decrypt_repo_key(key_file, key_name_filter, key_version, gpg_secret_keys, repo_keys_path);
+			}
+			// Fall back to age
+			if (!decrypted) {
+				decrypted = decrypt_repo_key_age(key_file, key_name_filter, key_version, repo_keys_path);
+			}
+			if (!decrypted) {
+				std::clog << "Error: no GPG or age identity available to unlock key '" << key_name_filter << "'." << std::endl;
+				std::clog << "To unlock with a shared symmetric key instead, specify the path to the symmetric key as an argument to 'git-crypt unlock'." << std::endl;
+				return 1;
+			}
+			key_files.push_back(key_file);
+		} else {
+			// Unlock all keys: try GPG then age for each key directory
+			// TODO: avoid decrypting repo keys which are already unlocked in the .git directory
+			std::vector<std::string>	dirents;
+			if (access(repo_keys_path.c_str(), F_OK) == 0) {
+				dirents = get_directory_contents(repo_keys_path.c_str());
+			}
+
+			for (std::vector<std::string>::const_iterator dirent(dirents.begin()); dirent != dirents.end(); ++dirent) {
+				const char*	key_name = 0;
+				if (*dirent != "default") {
+					if (!validate_key_name(dirent->c_str())) {
+						continue;
+					}
+					key_name = dirent->c_str();
+				}
+
+				std::string	key_dir_path(repo_keys_path + "/" + *dirent);
+				uint32_t	key_version = get_latest_key_version(key_dir_path);
+				Key_file	key_file;
+				bool		decrypted = false;
+
+				// Try GPG first
+				if (gpg_available) {
+					decrypted = decrypt_repo_key(key_file, key_name, key_version, gpg_secret_keys, repo_keys_path);
+				}
+				// Fall back to age
+				if (!decrypted) {
+					decrypted = decrypt_repo_key_age(key_file, key_name, key_version, repo_keys_path);
+				}
+				if (decrypted) {
+					key_files.push_back(key_file);
+				}
+			}
+
+			if (key_files.empty()) {
+				std::clog << "Error: no GPG or age identity available to unlock this repository." << std::endl;
+				std::clog << "To unlock with a shared symmetric key instead, specify the path to the symmetric key as an argument to 'git-crypt unlock'." << std::endl;
+				std::clog << "To see a list of GPG keys authorized to unlock this repository, run 'git-crypt ls-gpg-users'." << std::endl;
+				return 1;
+			}
 		}
 	}
 
@@ -1353,6 +1473,155 @@ int add_gpg_user (int argc, const char** argv)
 			for (std::vector<std::pair<std::string, bool> >::const_iterator collab(collab_keys.begin()); collab != collab_keys.end(); ++collab) {
 				commit_message_builder << "    " << collab->first << '\n';
 				commit_message_builder << "        " << gpg_get_uid(collab->first) << '\n';
+			}
+
+			// git commit -m MESSAGE NEW_FILE ...
+			command.clear();
+			command.push_back("git");
+			command.push_back("commit");
+			command.push_back("-m");
+			command.push_back(commit_message_builder.str());
+			command.push_back("--");
+			command.insert(command.end(), new_files.begin(), new_files.end());
+
+			if (!successful_exit(exec_command(command))) {
+				std::clog << "Error: 'git commit' failed" << std::endl;
+				return 1;
+			}
+		}
+	}
+
+	return 0;
+}
+
+void help_add_age_recipient (std::ostream& out)
+{
+	//     |--------------------------------------------------------------------------------| 80 chars
+	out << "Usage: git-crypt add-age-recipient [OPTIONS] AGE_RECIPIENT ..." << std::endl;
+	out << std::endl;
+	out << "    -k, --key-name KEYNAME      Add recipient to given key, instead of default" << std::endl;
+	out << "    -n, --no-commit             Don't automatically commit" << std::endl;
+	out << std::endl;
+	out << "AGE_RECIPIENT is an age public key (age1...) or SSH public key." << std::endl;
+	out << std::endl;
+	out << "Configuration:" << std::endl;
+	out << "    git config age.program PATH   Path to age binary (default: age)" << std::endl;
+	out << "    git config age.identity PATH  Path to age identity file for unlock" << std::endl;
+	out << "    AGE_IDENTITY env var          Alternative to age.identity config" << std::endl;
+	out << std::endl;
+}
+int add_age_recipient (int argc, const char** argv)
+{
+	const char*		key_name = 0;
+	bool			no_commit = false;
+	Options_list		options;
+	options.push_back(Option_def("-k", &key_name));
+	options.push_back(Option_def("--key-name", &key_name));
+	options.push_back(Option_def("-n", &no_commit));
+	options.push_back(Option_def("--no-commit", &no_commit));
+
+	int			argi = parse_options(options, argc, argv);
+	if (argc - argi == 0) {
+		std::clog << "Error: no age recipient specified" << std::endl;
+		help_add_age_recipient(std::clog);
+		return 2;
+	}
+
+	// Verify age is available
+	if (!age_is_available()) {
+		std::clog << "Error: 'age' command not found. Please install age (https://age-encryption.org)." << std::endl;
+		std::clog << "Or set 'git config age.program' to the path of the age binary." << std::endl;
+		return 1;
+	}
+
+	// Collect recipient strings
+	std::vector<std::string>	recipients;
+	for (int i = argi; i < argc; ++i) {
+		recipients.push_back(argv[i]);
+	}
+
+	// Load the symmetric key
+	Key_file			key_file;
+	load_key(key_file, key_name);
+	const Key_file::Entry*		key = key_file.get_latest();
+	if (!key) {
+		std::clog << "Error: key file is empty";
+		if (key_name) {
+			std::clog << " (key '" << key_name << "')";
+		}
+		std::clog << std::endl;
+		return 1;
+	}
+
+	const std::string		state_path(get_repo_state_path());
+	std::vector<std::string>	new_files;
+
+	encrypt_repo_key_age(key_name, *key, recipients, get_repo_keys_path(state_path), &new_files);
+
+	// Ensure .gitattributes in the state directory prevents encryption and marks age files as binary
+	const std::string		state_gitattributes_path(state_path + "/.gitattributes");
+	if (access(state_gitattributes_path.c_str(), F_OK) != 0) {
+		std::ofstream		state_gitattributes_file(state_gitattributes_path.c_str());
+		state_gitattributes_file << "# Do not edit this file.  To specify the files to encrypt, create your own\n";
+		state_gitattributes_file << "# .gitattributes file in the directory where your files are.\n";
+		state_gitattributes_file << "* !filter !diff\n";
+		state_gitattributes_file << "*.gpg binary\n";
+		state_gitattributes_file << "*.age binary\n";
+		state_gitattributes_file.close();
+		if (!state_gitattributes_file) {
+			std::clog << "Error: unable to write " << state_gitattributes_path << std::endl;
+			return 1;
+		}
+		new_files.push_back(state_gitattributes_path);
+	} else {
+		// Check if *.age binary line exists, append if not
+		std::ifstream		existing_attrs(state_gitattributes_path.c_str());
+		std::string		content;
+		bool			has_age_binary = false;
+		std::string		line;
+		while (std::getline(existing_attrs, line)) {
+			content += line + "\n";
+			if (line.find("*.age binary") != std::string::npos) {
+				has_age_binary = true;
+			}
+		}
+		existing_attrs.close();
+
+		if (!has_age_binary) {
+			std::ofstream	attrs_out(state_gitattributes_path.c_str(), std::ios::app);
+			attrs_out << "*.age binary\n";
+			attrs_out.close();
+			if (!attrs_out) {
+				std::clog << "Error: unable to update " << state_gitattributes_path << std::endl;
+				return 1;
+			}
+			new_files.push_back(state_gitattributes_path);
+		}
+	}
+
+	// add/commit the new files
+	if (!new_files.empty()) {
+		// git add NEW_FILE ...
+		std::vector<std::string>	command;
+		command.push_back("git");
+		command.push_back("add");
+		command.push_back("--");
+		command.insert(command.end(), new_files.begin(), new_files.end());
+		if (!successful_exit(exec_command(command))) {
+			std::clog << "Error: 'git add' failed" << std::endl;
+			return 1;
+		}
+
+		// git commit ...
+		if (!no_commit) {
+			std::ostringstream	commit_message_builder;
+			commit_message_builder << "Add " << recipients.size() << " git-crypt age recipient" << (recipients.size() != 1 ? "s" : "");
+			if (key_name) {
+				commit_message_builder << " for key '" << key_name << "'";
+			}
+			commit_message_builder << "\n\nNew age recipients:\n\n";
+			for (std::vector<std::string>::const_iterator r(recipients.begin()); r != recipients.end(); ++r) {
+				commit_message_builder << "    " << *r << '\n';
 			}
 
 			// git commit -m MESSAGE NEW_FILE ...
@@ -1984,6 +2253,127 @@ int rotate_key (int argc, const char** argv)
 	return 0;
 }
 
+void help_install_hooks (std::ostream& out)
+{
+	//     |--------------------------------------------------------------------------------| 80 chars
+	out << "Usage: git-crypt install-hooks" << std::endl;
+	out << std::endl;
+	out << "    Install a pre-commit hook that prevents accidental commits of" << std::endl;
+	out << "    plaintext files that should be encrypted by git-crypt." << std::endl;
+	out << std::endl;
+}
+int install_hooks (int argc, const char** argv)
+{
+	if (argc != 0) {
+		std::clog << "Error: git-crypt install-hooks takes no arguments" << std::endl;
+		help_install_hooks(std::clog);
+		return 2;
+	}
+
+	// Get the .git/hooks directory
+	std::vector<std::string>	command;
+	command.push_back("git");
+	command.push_back("rev-parse");
+	command.push_back("--git-dir");
+
+	std::stringstream		output;
+	if (!successful_exit(exec_command(command, output))) {
+		throw Error("'git rev-parse --git-dir' failed - is this a Git repository?");
+	}
+
+	std::string			git_dir;
+	std::getline(output, git_dir);
+	std::string			hooks_dir(git_dir + "/hooks");
+
+	// Ensure hooks directory exists
+	mkdir_parent(hooks_dir + "/dummy");
+
+	std::string			hook_dest(hooks_dir + "/pre-commit");
+
+	// Check if a pre-commit hook already exists
+	if (access(hook_dest.c_str(), F_OK) == 0) {
+		std::clog << "Warning: " << hook_dest << " already exists." << std::endl;
+		std::clog << "Overwriting with git-crypt pre-commit hook." << std::endl;
+	}
+
+	// Write the pre-commit hook inline
+	std::ofstream			hook_file(hook_dest.c_str());
+	if (!hook_file) {
+		throw Error("Unable to create hook file: " + hook_dest);
+	}
+
+	hook_file << "#!/bin/sh\n";
+	hook_file << "#\n";
+	hook_file << "# git-crypt pre-commit hook\n";
+	hook_file << "# Prevents accidental commits of plaintext files that should be encrypted.\n";
+	hook_file << "#\n";
+	hook_file << "set -e\n";
+	hook_file << "\n";
+	hook_file << "if ! git config --get-regexp '^filter\\.git-crypt' >/dev/null 2>&1; then\n";
+	hook_file << "\texit 0\n";
+	hook_file << "fi\n";
+	hook_file << "\n";
+	hook_file << "staged_files=$(git diff --cached --name-only --diff-filter=d)\n";
+	hook_file << "if [ -z \"$staged_files\" ]; then\n";
+	hook_file << "\texit 0\n";
+	hook_file << "fi\n";
+	hook_file << "\n";
+	hook_file << "ERRORS=0\n";
+	hook_file << "for file in $staged_files; do\n";
+	hook_file << "\tfilter=$(git check-attr filter -- \"$file\" | sed 's/.*: //')\n";
+	hook_file << "\tcase \"$filter\" in\n";
+	hook_file << "\t\tgit-crypt|git-crypt-*) ;;\n";
+	hook_file << "\t\t*) continue ;;\n";
+	hook_file << "\tesac\n";
+	hook_file << "\tblob_id=$(git ls-files -s -- \"$file\" | awk '{print $2}')\n";
+	hook_file << "\tif [ -z \"$blob_id\" ]; then\n";
+	hook_file << "\t\tcontinue\n";
+	hook_file << "\tfi\n";
+	hook_file << "\theader=$(git cat-file blob \"$blob_id\" | head -c 10 | od -A n -t x1 | tr -d ' \\n')\n";
+	hook_file << "\tif [ \"$header\" != \"00474954435259505400\" ]; then\n";
+	hook_file << "\t\techo \"ERROR: $file should be encrypted but is staged in PLAINTEXT!\" >&2\n";
+	hook_file << "\t\tERRORS=$((ERRORS + 1))\n";
+	hook_file << "\tfi\n";
+	hook_file << "done\n";
+	hook_file << "\n";
+	hook_file << "if [ \"$ERRORS\" -gt 0 ]; then\n";
+	hook_file << "\techo \"\" >&2\n";
+	hook_file << "\techo \"Commit rejected: $ERRORS file(s) would be committed without encryption.\" >&2\n";
+	hook_file << "\techo \"Run 'git-crypt status' to diagnose the issue.\" >&2\n";
+	hook_file << "\texit 1\n";
+	hook_file << "fi\n";
+	hook_file << "exit 0\n";
+
+	hook_file.close();
+	if (!hook_file) {
+		throw Error("Error writing hook file: " + hook_dest);
+	}
+
+	// Make the hook executable (on Unix)
+#ifndef _WIN32
+	if (chmod(hook_dest.c_str(), 0755) != 0) {
+		throw System_error("chmod", hook_dest, errno);
+	}
+#endif
+
+	std::cout << "Pre-commit hook installed to " << hook_dest << std::endl;
+	return 0;
+}
+
+void help_verify_commits (std::ostream& out)
+{
+	//     |--------------------------------------------------------------------------------| 80 chars
+	out << "Usage: git-crypt verify-commits [OPTIONS]" << std::endl;
+	out << std::endl;
+	out << "    Verify GPG signatures on commits that modify encrypted files." << std::endl;
+	out << std::endl;
+}
+int verify_commits (int argc, const char** argv)
+{
+	std::clog << "Error: verify-commits is not yet implemented." << std::endl;
+	return 1;
+}
+
 void help_status (std::ostream& out)
 {
 	//     |--------------------------------------------------------------------------------| 80 chars
@@ -2098,6 +2488,25 @@ int status (int argc, const char** argv)
 	unsigned int			nbr_of_fixed_blobs = 0;
 	unsigned int			nbr_of_fix_errors = 0;
 
+	// Batch attribute querying: use a single persistent git check-attr process
+	// for Git >= 1.8.5, avoiding one subprocess per file.
+	Coprocess			check_attr;
+	std::ostream*			check_attr_stdin = nullptr;
+	std::istream*			check_attr_stdout = nullptr;
+	if (git_version() >= make_version(1, 8, 5)) {
+		std::vector<std::string>	check_attr_command;
+		check_attr_command.push_back("git");
+		check_attr_command.push_back("check-attr");
+		check_attr_command.push_back("--stdin");
+		check_attr_command.push_back("-z");
+		check_attr_command.push_back("filter");
+		check_attr_command.push_back("diff");
+
+		check_attr_stdin = check_attr.stdin_pipe();
+		check_attr_stdout = check_attr.stdout_pipe();
+		check_attr.spawn(check_attr_command);
+	}
+
 	while (output.peek() != -1) {
 		std::string		tag;
 		std::string		object_id;
@@ -2114,8 +2523,12 @@ int status (int argc, const char** argv)
 		output >> std::ws;
 		std::getline(output, filename, '\0');
 
-		// TODO: get file attributes en masse for efficiency... unfortunately this requires machine-parseable output from git check-attr to be workable, and this is only supported in Git 1.8.5 and above (released 27 Nov 2013)
-		const std::pair<std::string, std::string> file_attrs(get_file_attributes(filename));
+		std::pair<std::string, std::string> file_attrs;
+		if (check_attr_stdin) {
+			file_attrs = get_file_attributes(filename, *check_attr_stdin, *check_attr_stdout);
+		} else {
+			file_attrs = get_file_attributes(filename);
+		}
 
 		if (file_attrs.first == "git-crypt" || std::strncmp(file_attrs.first.c_str(), "git-crypt-", 10) == 0) {
 			// File is encrypted
@@ -2194,6 +2607,14 @@ int status (int argc, const char** argv)
 					std::cout << "not encrypted: " << filename << std::endl;
 				}
 			}
+		}
+	}
+
+	// Clean up batch attribute querying coprocess
+	if (check_attr_stdin) {
+		check_attr.close_stdin();
+		if (!successful_exit(check_attr.wait())) {
+			throw Error("'git check-attr' failed - is this a Git repository?");
 		}
 	}
 

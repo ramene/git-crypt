@@ -34,6 +34,7 @@
 #include "crypto.hpp"
 #include "key.hpp"
 #include "gpg.hpp"
+#include "age.hpp"
 #include "parse_options.hpp"
 #include <cstring>
 #include <unistd.h>
@@ -57,7 +58,10 @@ static void print_usage (std::ostream& out)
 	out << "  add-gpg-user USERID  add the user with the given GPG user ID as a collaborator" << std::endl;
 	//out << "  rm-gpg-user USERID   revoke collaborator status from the given GPG user ID" << std::endl;
 	//out << "  ls-gpg-users         list the GPG key IDs of collaborators" << std::endl;
-	out << "  unlock               decrypt this repo using the in-repo GPG-encrypted key" << std::endl;
+	out << "  unlock               decrypt this repo using the in-repo GPG/age-encrypted key" << std::endl;
+	out << std::endl;
+	out << "Age commands:" << std::endl;
+	out << "  add-age-recipient RECIPIENT  add an age recipient as a collaborator" << std::endl;
 	out << std::endl;
 	out << "Symmetric key commands:" << std::endl;
 	out << "  export-key FILE      export this repo's symmetric key to the given file" << std::endl;
@@ -105,8 +109,16 @@ static bool help_for_command (const char* command, std::ostream& out)
 		help_migrate_key(out);
 	} else if (std::strcmp(command, "refresh") == 0) {
 		help_refresh(out);
+	} else if (std::strcmp(command, "rotate-key") == 0) {
+		help_rotate_key(out);
+	} else if (std::strcmp(command, "install-hooks") == 0) {
+		help_install_hooks(out);
+	} else if (std::strcmp(command, "verify-commits") == 0) {
+		help_verify_commits(out);
 	} else if (std::strcmp(command, "status") == 0) {
 		help_status(out);
+	} else if (std::strcmp(command, "add-age-recipient") == 0) {
+		help_add_age_recipient(out);
 	} else {
 		return false;
 	}
@@ -218,8 +230,20 @@ try {
 		if (std::strcmp(command, "refresh") == 0) {
 			return refresh(argc, argv);
 		}
+		if (std::strcmp(command, "rotate-key") == 0) {
+			return rotate_key(argc, argv);
+		}
+		if (std::strcmp(command, "install-hooks") == 0) {
+			return install_hooks(argc, argv);
+		}
+		if (std::strcmp(command, "verify-commits") == 0) {
+			return verify_commits(argc, argv);
+		}
 		if (std::strcmp(command, "status") == 0) {
 			return status(argc, argv);
+		}
+		if (std::strcmp(command, "add-age-recipient") == 0) {
+			return add_age_recipient(argc, argv);
 		}
 		// Plumbing commands (executed by git, not by user):
 		if (std::strcmp(command, "clean") == 0) {
@@ -245,6 +269,9 @@ try {
 	return 1;
 } catch (const Gpg_error& e) {
 	std::cerr << "git-crypt: GPG error: " << e.message << std::endl;
+	return 1;
+} catch (const Age_error& e) {
+	std::cerr << "git-crypt: Age error: " << e.message << std::endl;
 	return 1;
 } catch (const System_error& e) {
 	std::cerr << "git-crypt: System error: " << e.message() << std::endl;
