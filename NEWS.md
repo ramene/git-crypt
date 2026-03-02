@@ -1,5 +1,55 @@
 # Change Log
 
+## v0.9.0 (2026-03-02)
+
+### Modern Encryption Backends
+* Add age encryption backend as an alternative to GPG (`add-age-recipient`, `rm-age-recipient`).
+* Add SSH key support (`--ssh` flag) for encrypting to existing `ssh-ed25519` / `ssh-rsa` keys via age.
+* Add YubiKey PIV hardware authentication via age-plugin-yubikey.
+
+### Core Commands
+* Implement `rm-gpg-user` to revoke GPG user access.
+* Implement `ls-gpg-users` to list all GPG user fingerprints per key.
+* Implement `refresh` to force re-checkout of all encrypted files.
+* Implement `rotate-key` for symmetric key rotation with re-wrapping for all recipients.
+* Add machine-parseable status output (`status -m`).
+* Add `-f` / `--force` flag for forced re-initialization.
+* Add `--version` flag to `export-key` for exporting specific key versions.
+
+### Secret Management
+* Add SOPS bridge (`sops-config`) for structured file encryption (YAML, JSON, ENV).
+* Add `.credentials/` directory pattern (`credentials-init`) with pre-configured encryption.
+
+### Advanced Security
+* Implement Shamir's Secret Sharing for M-of-N key splitting (`split-key`, `unlock --shares`).
+* Add wallet-based identity using Ethereum wallet signatures (`add-wallet-recipient`, `unlock --wallet`).
+* Add SHA-256 hash-chained cryptographic audit trail (`audit-log`, `verify-audit`).
+* Add on-chain audit log anchoring (`anchor-audit`).
+* Add pre-commit hook for plaintext leak prevention (`install-hooks`).
+* Add signed commit verification for commits touching encrypted files (`verify-commits`).
+* Add `.gitattributes` tamper detection to `status` command.
+* Implement Windows `create_protected_file` with proper ACL permissions.
+
+### Code Quality
+* Fix hardcoded key version 0 in GPG unlock path.
+* Improve error messages with key name context throughout.
+
+### Infrastructure
+* Add Catch2 unit test framework with crypto and key roundtrip tests.
+* Add GitHub Actions CI pipeline (Ubuntu gcc/clang, macOS clang, CMake).
+* Add GitHub Actions release workflow with cross-platform binary builds.
+* Add CMake build system alongside the original Makefile.
+* Add Docker-based development environment (Dockerfile.dev, docker-compose.yml).
+* Add Homebrew formula for installation.
+* Reorganize source files into `src/` directory structure.
+
+### Documentation
+* Add security model and threat analysis documentation (doc/SECURITY.md).
+* Add post-quantum cryptography readiness assessment (doc/post-quantum-readiness.md).
+* Add GPG-to-age migration guide (doc/age-migration-guide.md).
+* Add practical examples section to man page.
+* Rewrite README.md and CONTRIBUTING.md for the fork.
+
 ## v0.8.0 (2025-09-23)
 * Remove OpenSSL 1.0 support, fix compilation with OpenSSL 3.
 * Avoid use of problematic short GPG key IDs.

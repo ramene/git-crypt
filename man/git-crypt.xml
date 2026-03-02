@@ -7,8 +7,8 @@
 	-->
 	<refentryinfo>
 		<title>git-crypt</title>
-		<date>2022-04-21</date>
-		<productname>git-crypt 0.8.0</productname>
+		<date>2026-03-02</date>
+		<productname>git-crypt 0.9.0</productname>
 
 		<author>
 			<othername>Andrew Ayer</othername>
@@ -52,7 +52,25 @@
 			<command>git-crypt add-gpg-user <arg choice="plain"><replaceable>GPG_USER_ID</replaceable></arg></command>
 		</cmdsynopsis>
 		<cmdsynopsis>
+			<command>git-crypt rm-gpg-user <arg choice="plain"><replaceable>GPG_USER_ID</replaceable></arg></command>
+		</cmdsynopsis>
+		<cmdsynopsis>
+			<command>git-crypt ls-gpg-users</command>
+		</cmdsynopsis>
+		<cmdsynopsis>
 			<command>git-crypt unlock</command>
+		</cmdsynopsis>
+	</refsynopsisdiv>
+	<refsynopsisdiv>
+		<title>Age commands</title>
+		<cmdsynopsis>
+			<command>git-crypt add-age-recipient <arg choice="plain"><replaceable>RECIPIENT</replaceable></arg></command>
+		</cmdsynopsis>
+		<cmdsynopsis>
+			<command>git-crypt rm-age-recipient <arg choice="plain"><replaceable>RECIPIENT</replaceable></arg></command>
+		</cmdsynopsis>
+		<cmdsynopsis>
+			<command>git-crypt unlock --age</command>
 		</cmdsynopsis>
 	</refsynopsisdiv>
 	<refsynopsisdiv>
@@ -62,6 +80,45 @@
 		</cmdsynopsis>
 		<cmdsynopsis>
 			<command>git-crypt unlock <arg choice="plain"><replaceable>KEY_FILE</replaceable></arg></command>
+		</cmdsynopsis>
+		<cmdsynopsis>
+			<command>git-crypt rotate-key</command>
+		</cmdsynopsis>
+		<cmdsynopsis>
+			<command>git-crypt split-key</command>
+		</cmdsynopsis>
+	</refsynopsisdiv>
+	<refsynopsisdiv>
+		<title>Security commands</title>
+		<cmdsynopsis>
+			<command>git-crypt install-hooks</command>
+		</cmdsynopsis>
+		<cmdsynopsis>
+			<command>git-crypt verify-commits</command>
+		</cmdsynopsis>
+	</refsynopsisdiv>
+	<refsynopsisdiv>
+		<title>SOPS integration</title>
+		<cmdsynopsis>
+			<command>git-crypt sops-config</command>
+		</cmdsynopsis>
+		<cmdsynopsis>
+			<command>git-crypt credentials-init</command>
+		</cmdsynopsis>
+	</refsynopsisdiv>
+	<refsynopsisdiv>
+		<title>Audit and wallet commands</title>
+		<cmdsynopsis>
+			<command>git-crypt audit-log</command>
+		</cmdsynopsis>
+		<cmdsynopsis>
+			<command>git-crypt verify-audit</command>
+		</cmdsynopsis>
+		<cmdsynopsis>
+			<command>git-crypt anchor-audit</command>
+		</cmdsynopsis>
+		<cmdsynopsis>
+			<command>git-crypt add-wallet-recipient <arg choice="plain"><replaceable>ADDRESS</replaceable></arg></command>
 		</cmdsynopsis>
 	</refsynopsisdiv>
 
@@ -113,6 +170,17 @@
 								</para>
 							</listitem>
 						</varlistentry>
+						<varlistentry>
+							<term><option>-f</option></term>
+							<term><option>--force</option></term>
+
+							<listitem>
+								<para>
+									Force re-initialization even if the repository is already
+									configured for git-crypt.
+								</para>
+							</listitem>
+						</varlistentry>
 					</variablelist>
 				</listitem>
 			</varlistentry>
@@ -160,7 +228,23 @@
 								</para>
 							</listitem>
 						</varlistentry>
+						<varlistentry>
+							<term><option>-m</option></term>
+							<term><option>--machine</option></term>
+
+							<listitem>
+								<para>
+									Output in machine-parseable TSV format (path, encrypted,
+									filter_installed, key_name) suitable for scripting.
+								</para>
+							</listitem>
+						</varlistentry>
 					</variablelist>
+					<para>
+						The status command also detects <filename>.gitattributes</filename> tampering:
+						if a file appears to be encrypted but lacks the required filter attributes,
+						a warning is displayed.
+					</para>
 				</listitem>
 			</varlistentry>
 
@@ -277,6 +361,260 @@
 			</varlistentry>
 
 			<varlistentry>
+				<term><option>rm-gpg-user <arg choice="opt"><replaceable>OPTIONS</replaceable></arg> <arg choice="plain"><replaceable>GPG_USER_ID</replaceable></arg></option></term>
+				<listitem>
+					<para>
+						Revoke access for the GPG user with the given user ID.  Removes the
+						GPG-encrypted key file from the <filename>.git-crypt</filename> directory.
+						After removing a user, you should run <command>rotate-key</command> to
+						generate a new key version that the removed user cannot decrypt.
+					</para>
+					<variablelist>
+						<varlistentry>
+							<term><option>-k</option> <replaceable>KEY_NAME</replaceable></term>
+							<term><option>--key-name</option> <replaceable>KEY_NAME</replaceable></term>
+							<listitem>
+								<para>Revoke access to the given key, rather than the default key.</para>
+							</listitem>
+						</varlistentry>
+					</variablelist>
+				</listitem>
+			</varlistentry>
+
+			<varlistentry>
+				<term><option>ls-gpg-users <arg choice="opt"><replaceable>OPTIONS</replaceable></arg></option></term>
+				<listitem>
+					<para>
+						List all GPG user fingerprints that have access to encrypted files,
+						organized by key name.
+					</para>
+					<variablelist>
+						<varlistentry>
+							<term><option>-k</option> <replaceable>KEY_NAME</replaceable></term>
+							<term><option>--key-name</option> <replaceable>KEY_NAME</replaceable></term>
+							<listitem>
+								<para>List users for the given key only, rather than all keys.</para>
+							</listitem>
+						</varlistentry>
+					</variablelist>
+				</listitem>
+			</varlistentry>
+
+			<varlistentry>
+				<term><option>add-age-recipient <arg choice="opt"><replaceable>OPTIONS</replaceable></arg> <arg choice="plain"><replaceable>RECIPIENT</replaceable></arg></option></term>
+				<listitem>
+					<para>
+						Add an age recipient as a collaborator.  The symmetric key is encrypted
+						(wrapped) to the recipient's age public key and stored in the
+						<filename>.git-crypt</filename> directory.  Requires the
+						<command>age</command> binary to be installed.
+					</para>
+					<variablelist>
+						<varlistentry>
+							<term><option>-k</option> <replaceable>KEY_NAME</replaceable></term>
+							<term><option>--key-name</option> <replaceable>KEY_NAME</replaceable></term>
+							<listitem>
+								<para>Grant access to the given key, rather than the default key.</para>
+							</listitem>
+						</varlistentry>
+						<varlistentry>
+							<term><option>--ssh</option> <replaceable>SSH_KEY_FILE</replaceable></term>
+							<listitem>
+								<para>
+									Add an SSH public key as a recipient.  The SSH key file
+									(e.g. <filename>~/.ssh/id_ed25519.pub</filename>) is converted
+									to an age-compatible recipient.  Supports <literal>ssh-ed25519</literal>
+									and <literal>ssh-rsa</literal> key types.
+								</para>
+							</listitem>
+						</varlistentry>
+						<varlistentry>
+							<term><option>-n</option></term>
+							<term><option>--no-commit</option></term>
+							<listitem>
+								<para>Don't automatically commit the changes.</para>
+							</listitem>
+						</varlistentry>
+					</variablelist>
+				</listitem>
+			</varlistentry>
+
+			<varlistentry>
+				<term><option>rm-age-recipient <arg choice="opt"><replaceable>OPTIONS</replaceable></arg> <arg choice="plain"><replaceable>RECIPIENT</replaceable></arg></option></term>
+				<listitem>
+					<para>
+						Revoke access for the given age recipient.  After removing a recipient,
+						run <command>rotate-key</command> to generate a new key version.
+					</para>
+					<variablelist>
+						<varlistentry>
+							<term><option>-k</option> <replaceable>KEY_NAME</replaceable></term>
+							<term><option>--key-name</option> <replaceable>KEY_NAME</replaceable></term>
+							<listitem>
+								<para>Revoke access to the given key, rather than the default key.</para>
+							</listitem>
+						</varlistentry>
+					</variablelist>
+				</listitem>
+			</varlistentry>
+
+			<varlistentry>
+				<term><option>rotate-key <arg choice="opt"><replaceable>OPTIONS</replaceable></arg></option></term>
+				<listitem>
+					<para>
+						Generate a new key version and re-encrypt all files.  All existing
+						GPG users and age recipients are automatically re-wrapped with the
+						new key version.  Use this after removing a collaborator to ensure
+						they cannot decrypt future content.
+					</para>
+					<variablelist>
+						<varlistentry>
+							<term><option>-k</option> <replaceable>KEY_NAME</replaceable></term>
+							<term><option>--key-name</option> <replaceable>KEY_NAME</replaceable></term>
+							<listitem>
+								<para>Rotate the given key, rather than the default key.</para>
+							</listitem>
+						</varlistentry>
+					</variablelist>
+				</listitem>
+			</varlistentry>
+
+			<varlistentry>
+				<term><option>split-key <arg choice="opt"><replaceable>OPTIONS</replaceable></arg></option></term>
+				<listitem>
+					<para>
+						Split the symmetric key into M-of-N Shamir shares.  Any M shares
+						can reconstruct the key, but fewer than M shares reveal no
+						information about the key (information-theoretic security).
+					</para>
+					<variablelist>
+						<varlistentry>
+							<term><option>-n</option> <replaceable>TOTAL</replaceable></term>
+							<listitem>
+								<para>Total number of shares to generate.</para>
+							</listitem>
+						</varlistentry>
+						<varlistentry>
+							<term><option>-m</option> <replaceable>THRESHOLD</replaceable></term>
+							<listitem>
+								<para>Minimum number of shares required to reconstruct the key.</para>
+							</listitem>
+						</varlistentry>
+						<varlistentry>
+							<term><option>-k</option> <replaceable>KEY_NAME</replaceable></term>
+							<term><option>--key-name</option> <replaceable>KEY_NAME</replaceable></term>
+							<listitem>
+								<para>Split the given key, rather than the default key.</para>
+							</listitem>
+						</varlistentry>
+					</variablelist>
+				</listitem>
+			</varlistentry>
+
+			<varlistentry>
+				<term><option>refresh</option></term>
+				<listitem>
+					<para>
+						Force re-checkout of all encrypted files.  Useful after key changes,
+						filter updates, or when encrypted files appear corrupted in the
+						working copy.
+					</para>
+				</listitem>
+			</varlistentry>
+
+			<varlistentry>
+				<term><option>install-hooks</option></term>
+				<listitem>
+					<para>
+						Install a pre-commit hook that checks for accidental plaintext
+						commits of files that should be encrypted.  The hook verifies
+						that the git-crypt filter is properly applied before allowing
+						a commit.
+					</para>
+				</listitem>
+			</varlistentry>
+
+			<varlistentry>
+				<term><option>verify-commits <arg choice="opt"><replaceable>OPTIONS</replaceable></arg></option></term>
+				<listitem>
+					<para>
+						Verify that all commits which modified encrypted files are
+						GPG or SSH signed.  Useful for auditing repository integrity
+						and detecting unauthorized modifications.
+					</para>
+				</listitem>
+			</varlistentry>
+
+			<varlistentry>
+				<term><option>sops-config <arg choice="opt"><replaceable>OPTIONS</replaceable></arg></option></term>
+				<listitem>
+					<para>
+						Generate a <filename>.sops.yaml</filename> configuration file for
+						use with Mozilla SOPS.  This bridges git-crypt with SOPS for
+						structured file encryption (YAML, JSON, ENV files).
+					</para>
+				</listitem>
+			</varlistentry>
+
+			<varlistentry>
+				<term><option>credentials-init <arg choice="opt"><replaceable>OPTIONS</replaceable></arg></option></term>
+				<listitem>
+					<para>
+						Create a <filename>.credentials/</filename> directory with
+						encryption pre-configured via <filename>.gitattributes</filename>.
+						Provides a standardized location for storing encrypted credentials.
+					</para>
+				</listitem>
+			</varlistentry>
+
+			<varlistentry>
+				<term><option>audit-log</option></term>
+				<listitem>
+					<para>
+						Display the cryptographic audit trail.  Each entry in the log
+						is hash-chained (SHA-256) to the previous entry, providing
+						tamper detection.  The log records encryption and decryption
+						events with timestamps and user identifiers.
+					</para>
+				</listitem>
+			</varlistentry>
+
+			<varlistentry>
+				<term><option>verify-audit</option></term>
+				<listitem>
+					<para>
+						Verify the integrity of the audit log hash chain.  Checks that
+						each entry's hash correctly references the previous entry,
+						detecting any tampering or corruption.
+					</para>
+				</listitem>
+			</varlistentry>
+
+			<varlistentry>
+				<term><option>anchor-audit</option></term>
+				<listitem>
+					<para>
+						Publish the current audit log hash to a blockchain for immutable
+						timestamping.  This creates an on-chain record that can be used
+						to prove the audit log existed in its current state at a specific
+						point in time.
+					</para>
+				</listitem>
+			</varlistentry>
+
+			<varlistentry>
+				<term><option>add-wallet-recipient <arg choice="plain"><replaceable>ADDRESS</replaceable></arg></option></term>
+				<listitem>
+					<para>
+						Add an Ethereum wallet address as a collaborator.  The wallet's
+						signature is used to derive an age-compatible X25519 key, which
+						is then used to wrap the symmetric key.  This enables decentralized
+						identity-based access control without traditional key management.
+					</para>
+				</listitem>
+			</varlistentry>
+
+			<varlistentry>
 				<term><option>help <arg choice="opt"><replaceable>COMMAND</replaceable></arg></option></term>
 				<listitem>
 					<para>
@@ -338,18 +676,36 @@
 		</para>
 
 		<para>
-			Alternatively, you can export a symmetric secret key, which you must
-			securely convey to collaborators (GPG is not required, and no files
+			Alternatively, you can share access using age (a modern, simpler alternative to GPG):
+		</para>
+
+		<screen>git-crypt add-age-recipient <replaceable>age1...</replaceable></screen>
+
+		<para>
+			Or using an existing SSH public key:
+		</para>
+
+		<screen>git-crypt add-age-recipient --ssh <replaceable>~/.ssh/id_ed25519.pub</replaceable></screen>
+
+		<para>
+			You can also export a symmetric secret key, which you must
+			securely convey to collaborators (GPG/age is not required, and no files
 			are added to your repository):
 		</para>
 
 		<screen>git-crypt export-key <replaceable>/path/to/key</replaceable></screen>
 
 		<para>
-			After cloning a repository with encrypted files, unlock with with GPG:
+			After cloning a repository with encrypted files, unlock with GPG:
 		</para>
 
 		<screen>git-crypt unlock</screen>
+
+		<para>
+			Or with age:
+		</para>
+
+		<screen>git-crypt unlock --age</screen>
 
 		<para>
 			Or with a symmetric key:
@@ -529,8 +885,82 @@ $ git-crypt export-key /path/to/shared-key
 # Export a named key
 $ git-crypt export-key -k staging /path/to/staging-key
 
+# Export a specific key version
+$ git-crypt export-key --version 2 /path/to/key-v2
+
 # A collaborator can then unlock with the exported key
 $ git-crypt unlock /path/to/shared-key</screen>
+
+		<para>
+			<emphasis role="bold">Use age encryption (alternative to GPG):</emphasis>
+		</para>
+		<screen># Add an age recipient
+$ git-crypt add-age-recipient age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p
+
+# Add a collaborator by their SSH public key
+$ git-crypt add-age-recipient --ssh ~/.ssh/id_ed25519.pub
+
+# Unlock with age identity
+$ git-crypt unlock --age
+
+# Unlock with a specific age identity file
+$ git-crypt unlock --age --identity /path/to/age-key.txt
+
+# Remove an age recipient
+$ git-crypt rm-age-recipient age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p</screen>
+
+		<para>
+			<emphasis role="bold">Manage GPG users:</emphasis>
+		</para>
+		<screen># List all GPG users with access
+$ git-crypt ls-gpg-users
+
+# Remove a GPG user's access
+$ git-crypt rm-gpg-user alice@example.com
+
+# Rotate the key after removing a user
+$ git-crypt rotate-key</screen>
+
+		<para>
+			<emphasis role="bold">Split a key using Shamir's Secret Sharing:</emphasis>
+		</para>
+		<screen># Split into 5 shares, requiring 3 to reconstruct
+$ git-crypt split-key -n 5 -m 3
+
+# Unlock using 3 of the 5 shares
+$ git-crypt unlock --shares share1.key share2.key share3.key</screen>
+
+		<para>
+			<emphasis role="bold">Security and auditing:</emphasis>
+		</para>
+		<screen># Install pre-commit hook to prevent plaintext leaks
+$ git-crypt install-hooks
+
+# Verify all commits touching encrypted files are signed
+$ git-crypt verify-commits
+
+# View the cryptographic audit trail
+$ git-crypt audit-log
+
+# Verify audit log integrity
+$ git-crypt verify-audit
+
+# Anchor audit hash to blockchain
+$ git-crypt anchor-audit</screen>
+
+		<para>
+			<emphasis role="bold">SOPS integration:</emphasis>
+		</para>
+		<screen># Generate .sops.yaml for structured file encryption
+$ git-crypt sops-config
+
+# Set up a .credentials/ directory with encryption
+$ git-crypt credentials-init</screen>
+
+		<para>
+			<emphasis role="bold">Force re-checkout after key changes:</emphasis>
+		</para>
+		<screen>$ git-crypt refresh</screen>
 	</refsect1>
 
 	<refsect1>
@@ -538,8 +968,10 @@ $ git-crypt unlock /path/to/shared-key</screen>
 		<para>
 			<citerefentry><refentrytitle>git</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
 			<citerefentry><refentrytitle>gitattributes</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-			<ulink url="https://www.agwa.name/projects/git-crypt">git-crypt home page</ulink>,
-			<ulink url="https://github.com/AGWA/git-crypt">GitHub repository</ulink>
+			<citerefentry><refentrytitle>gpg</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
+			<ulink url="https://age-encryption.org/">age encryption</ulink>,
+			<ulink url="https://github.com/getsops/sops">Mozilla SOPS</ulink>,
+			<ulink url="https://github.com/ramene/git-crypt">git-crypt-revived GitHub repository</ulink>
 		</para>
 	</refsect1>
 
