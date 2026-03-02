@@ -32,6 +32,7 @@
 #define GIT_CRYPT_AGE_HPP
 
 #include <string>
+#include <vector>
 #include <iosfwd>
 #include <cstddef>
 
@@ -45,5 +46,7 @@ bool		age_is_available ();
 std::string	age_recipient_hash (const std::string& recipient);
 void		age_encrypt_to_file (const std::string& filename, const std::string& recipient, const char* p, size_t len);
 bool		age_decrypt_from_file (const std::string& filename, std::ostream& output);
+bool		age_yubikey_is_available ();
+std::vector<std::string>	age_yubikey_list_recipients ();
 
 #endif

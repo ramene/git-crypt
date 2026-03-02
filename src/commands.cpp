@@ -1499,10 +1499,12 @@ void help_add_age_recipient (std::ostream& out)
 	//     |--------------------------------------------------------------------------------| 80 chars
 	out << "Usage: git-crypt add-age-recipient [OPTIONS] AGE_RECIPIENT ..." << std::endl;
 	out << "   or: git-crypt add-age-recipient [OPTIONS] --ssh SSH_KEY_FILE ..." << std::endl;
+	out << "   or: git-crypt add-age-recipient [OPTIONS] --yubikey" << std::endl;
 	out << std::endl;
 	out << "    -k, --key-name KEYNAME      Add recipient to given key, instead of default" << std::endl;
 	out << "    -n, --no-commit             Don't automatically commit" << std::endl;
 	out << "    --ssh                       Read SSH public keys from files" << std::endl;
+	out << "    --yubikey                   Use YubiKey PIV via age-plugin-yubikey" << std::endl;
 	out << std::endl;
 	out << "AGE_RECIPIENT is an age public key (age1...) or SSH public key string." << std::endl;
 	out << "With --ssh, arguments are paths to SSH public key files." << std::endl;
@@ -1518,15 +1520,17 @@ int add_age_recipient (int argc, const char** argv)
 	const char*		key_name = 0;
 	bool			no_commit = false;
 	bool			ssh_mode = false;
+	bool			yubikey_mode = false;
 	Options_list		options;
 	options.push_back(Option_def("-k", &key_name));
 	options.push_back(Option_def("--key-name", &key_name));
 	options.push_back(Option_def("-n", &no_commit));
 	options.push_back(Option_def("--no-commit", &no_commit));
 	options.push_back(Option_def("--ssh", &ssh_mode));
+	options.push_back(Option_def("--yubikey", &yubikey_mode));
 
 	int			argi = parse_options(options, argc, argv);
-	if (argc - argi == 0) {
+	if (!yubikey_mode && argc - argi == 0) {
 		std::clog << "Error: no age recipient specified" << std::endl;
 		help_add_age_recipient(std::clog);
 		return 2;
@@ -1541,7 +1545,24 @@ int add_age_recipient (int argc, const char** argv)
 
 	// Collect recipient strings
 	std::vector<std::string>	recipients;
-	if (ssh_mode) {
+	if (yubikey_mode) {
+		// Detect YubiKey identities via age-plugin-yubikey
+		if (!age_yubikey_is_available()) {
+			std::clog << "Error: 'age-plugin-yubikey' not found." << std::endl;
+			std::clog << "Install it from https://github.com/str4d/age-plugin-yubikey" << std::endl;
+			return 1;
+		}
+		recipients = age_yubikey_list_recipients();
+		if (recipients.empty()) {
+			std::clog << "Error: no YubiKey identities found." << std::endl;
+			std::clog << "Insert a YubiKey and ensure age-plugin-yubikey can detect it." << std::endl;
+			return 1;
+		}
+		std::clog << "Found " << recipients.size() << " YubiKey identity" << (recipients.size() != 1 ? "ies" : "") << ":" << std::endl;
+		for (std::vector<std::string>::const_iterator r(recipients.begin()); r != recipients.end(); ++r) {
+			std::clog << "  " << *r << std::endl;
+		}
+	} else if (ssh_mode) {
 		// Read SSH public keys from files
 		for (int i = argi; i < argc; ++i) {
 			std::ifstream	key_file(argv[i]);
