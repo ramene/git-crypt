@@ -34,6 +34,7 @@
 #include "key.hpp"
 #include "gpg.hpp"
 #include "age.hpp"
+#include "shamir.hpp"
 #include "parse_options.hpp"
 #include "coprocess.hpp"
 #include <unistd.h>
@@ -1096,16 +1097,20 @@ void help_unlock (std::ostream& out)
 	//     |--------------------------------------------------------------------------------| 80 chars
 	out << "Usage: git-crypt unlock [OPTIONS]" << std::endl;
 	out << "   or: git-crypt unlock [OPTIONS] KEY_FILE ..." << std::endl;
+	out << "   or: git-crypt unlock --shares FILE1 FILE2 ..." << std::endl;
 	out << std::endl;
 	out << "    -k, --key-name KEYNAME   Unlock only the given key, instead of all keys" << std::endl;
+	out << "    --shares FILE ...        Reconstruct key from Shamir share files" << std::endl;
 	out << std::endl;
 }
 int unlock (int argc, const char** argv)
 {
 	const char*	key_name_filter = 0;
+	bool		use_shares = false;
 	Options_list	options;
 	options.push_back(Option_def("-k", &key_name_filter));
 	options.push_back(Option_def("--key-name", &key_name_filter));
+	options.push_back(Option_def("--shares", &use_shares));
 
 	int		argi = parse_options(options, argc, argv);
 
@@ -1130,7 +1135,50 @@ int unlock (int argc, const char** argv)
 
 	// 2. Load the key(s)
 	std::vector<Key_file>	key_files;
-	if (argc - argi > 0) {
+	if (use_shares) {
+		// Reconstruct key from Shamir share files
+		if (argc - argi < 2) {
+			std::clog << "Error: --shares requires at least 2 share files" << std::endl;
+			help_unlock(std::clog);
+			return 2;
+		}
+
+		std::vector<Shamir_share>	shares;
+		for (int i = argi; i < argc; ++i) {
+			Shamir_share	share;
+			if (!share.load_from_file(argv[i])) {
+				std::clog << "Error: " << argv[i] << ": unable to read share file" << std::endl;
+				return 1;
+			}
+			shares.push_back(share);
+		}
+
+		std::cout << "Combining " << shares.size() << " shares (threshold: "
+			  << static_cast<int>(shares[0].threshold) << ")..." << std::endl;
+
+		std::string	key_data = shamir_combine(shares);
+
+		Key_file	key_file;
+		try {
+			std::istringstream	key_stream(key_data);
+			key_file.load(key_stream);
+		} catch (Key_file::Incompatible) {
+			std::clog << "Error: reconstructed key is in an incompatible format" << std::endl;
+			return 1;
+		} catch (Key_file::Malformed) {
+			std::clog << "Error: reconstructed key is malformed (wrong shares?)" << std::endl;
+			return 1;
+		}
+
+		// Securely clear key data
+		explicit_memset(&key_data[0], 0, key_data.size());
+
+		if (key_name_filter && !same_key_name(key_name_filter, key_file.get_key_name())) {
+			std::clog << "Error: reconstructed key name does not match --key-name filter" << std::endl;
+			return 1;
+		}
+		key_files.push_back(key_file);
+	} else if (argc - argi > 0) {
 		// Read from the symmetric key file(s)
 
 		for (int i = argi; i < argc; ++i) {
@@ -1375,6 +1423,7 @@ void help_add_gpg_user (std::ostream& out)
 	out << "    -k, --key-name KEYNAME      Add GPG user to given key, instead of default" << std::endl;
 	out << "    -n, --no-commit             Don't automatically commit" << std::endl;
 	out << "    --trusted                   Assume the GPG user IDs are trusted" << std::endl;
+	out << "    --retroactive               Grant access to all key versions, not just latest" << std::endl;
 	out << std::endl;
 }
 int add_gpg_user (int argc, const char** argv)
@@ -1382,12 +1431,14 @@ int add_gpg_user (int argc, const char** argv)
 	const char*		key_name = 0;
 	bool			no_commit = false;
 	bool			trusted = false;
+	bool			retroactive = false;
 	Options_list		options;
 	options.push_back(Option_def("-k", &key_name));
 	options.push_back(Option_def("--key-name", &key_name));
 	options.push_back(Option_def("-n", &no_commit));
 	options.push_back(Option_def("--no-commit", &no_commit));
 	options.push_back(Option_def("--trusted", &trusted));
+	options.push_back(Option_def("--retroactive", &retroactive));
 
 	int			argi = parse_options(options, argc, argv);
 	if (argc - argi == 0) {
@@ -1414,11 +1465,10 @@ int add_gpg_user (int argc, const char** argv)
 		collab_keys.push_back(std::make_pair(keys[0], trusted || is_full_fingerprint));
 	}
 
-	// TODO: have a retroactive option to grant access to all key versions, not just the most recent
 	Key_file			key_file;
 	load_key(key_file, key_name);
-	const Key_file::Entry*		key = key_file.get_latest();
-	if (!key) {
+	const Key_file::Entry*		latest_key = key_file.get_latest();
+	if (!latest_key) {
 		std::clog << "Error: key file is empty";
 		if (key_name) {
 			std::clog << " (key '" << key_name << "')";
@@ -1430,7 +1480,18 @@ int add_gpg_user (int argc, const char** argv)
 	const std::string		state_path(get_repo_state_path());
 	std::vector<std::string>	new_files;
 
-	encrypt_repo_key(key_name, *key, collab_keys, get_repo_keys_path(state_path), &new_files);
+	if (retroactive) {
+		// Grant access to all key versions (0 through latest)
+		for (uint32_t v = 0; v <= latest_key->version; ++v) {
+			const Key_file::Entry*	entry = key_file.get(v);
+			if (entry) {
+				encrypt_repo_key(key_name, *entry, collab_keys, get_repo_keys_path(state_path), &new_files);
+			}
+		}
+	} else {
+		// Default: only grant access to the latest key version
+		encrypt_repo_key(key_name, *latest_key, collab_keys, get_repo_keys_path(state_path), &new_files);
+	}
 
 	// Add a .gitatributes file to the repo state directory to prevent files in it from being encrypted.
 	const std::string		state_gitattributes_path(state_path + "/.gitattributes");
@@ -1468,6 +1529,9 @@ int add_gpg_user (int argc, const char** argv)
 			commit_message_builder << "Add " << collab_keys.size() << " git-crypt collaborator" << (collab_keys.size() != 1 ? "s" : "");
 			if (key_name) {
 				commit_message_builder << " for key '" << key_name << "'";
+			}
+			if (retroactive) {
+				commit_message_builder << " (retroactive: all key versions)";
 			}
 			commit_message_builder << "\n\nNew collaborators:\n\n";
 			for (std::vector<std::pair<std::string, bool> >::const_iterator collab(collab_keys.begin()); collab != collab_keys.end(); ++collab) {
@@ -1987,6 +2051,106 @@ int export_key (int argc, const char** argv)
 			return 1;
 		}
 	}
+
+	return 0;
+}
+
+void help_split_key (std::ostream& out)
+{
+	//     |--------------------------------------------------------------------------------| 80 chars
+	out << "Usage: git-crypt split-key [OPTIONS] -o PREFIX" << std::endl;
+	out << std::endl;
+	out << "    -m, --threshold M        Minimum shares needed to reconstruct (default: 3)" << std::endl;
+	out << "    -n, --shares N           Total number of shares to generate (default: 5)" << std::endl;
+	out << "    -o, --output PREFIX      Output file prefix (required)" << std::endl;
+	out << "    -k, --key-name KEYNAME   Split the given key, instead of the default" << std::endl;
+	out << std::endl;
+	out << "Splits the symmetric key into N Shamir shares, of which any M are sufficient" << std::endl;
+	out << "to reconstruct the key.  Share files are written as PREFIX.1, PREFIX.2, etc." << std::endl;
+	out << std::endl;
+	out << "Use 'git-crypt unlock --shares FILE1 FILE2 ...' to reconstruct and unlock." << std::endl;
+}
+int split_key (int argc, const char** argv)
+{
+	const char*		key_name = 0;
+	const char*		threshold_str = 0;
+	const char*		shares_str = 0;
+	const char*		output_prefix = 0;
+	Options_list		options;
+	options.push_back(Option_def("-k", &key_name));
+	options.push_back(Option_def("--key-name", &key_name));
+	options.push_back(Option_def("-m", &threshold_str));
+	options.push_back(Option_def("--threshold", &threshold_str));
+	options.push_back(Option_def("-n", &shares_str));
+	options.push_back(Option_def("--shares", &shares_str));
+	options.push_back(Option_def("-o", &output_prefix));
+	options.push_back(Option_def("--output", &output_prefix));
+
+	parse_options(options, argc, argv);
+
+	if (!output_prefix) {
+		std::clog << "Error: -o/--output prefix is required" << std::endl;
+		help_split_key(std::clog);
+		return 2;
+	}
+
+	// Parse threshold and shares (defaults: 3-of-5)
+	uint8_t		threshold = 3;
+	uint8_t		total = 5;
+
+	if (threshold_str) {
+		char*		end = 0;
+		unsigned long	val = std::strtoul(threshold_str, &end, 10);
+		if (end == threshold_str || *end != '\0' || val < 2 || val > 255) {
+			std::clog << "Error: invalid threshold: " << threshold_str << " (must be 2-255)" << std::endl;
+			return 2;
+		}
+		threshold = static_cast<uint8_t>(val);
+	}
+	if (shares_str) {
+		char*		end = 0;
+		unsigned long	val = std::strtoul(shares_str, &end, 10);
+		if (end == shares_str || *end != '\0' || val < 2 || val > 255) {
+			std::clog << "Error: invalid share count: " << shares_str << " (must be 2-255)" << std::endl;
+			return 2;
+		}
+		total = static_cast<uint8_t>(val);
+	}
+
+	if (threshold > total) {
+		std::clog << "Error: threshold (" << static_cast<int>(threshold) << ") must be <= total shares (" << static_cast<int>(total) << ")" << std::endl;
+		return 2;
+	}
+
+	// Load the key file
+	Key_file		key_file;
+	load_key(key_file, key_name);
+
+	// Serialize key to string
+	std::string		key_data = key_file.store_to_string();
+
+	// Split into shares
+	std::vector<Shamir_share>	shares = shamir_split(key_data, threshold, total);
+
+	// Write each share to a file
+	for (uint8_t i = 0; i < total; ++i) {
+		std::string	filename = std::string(output_prefix) + "." + std::to_string(i + 1);
+		if (!shares[i].store_to_file(filename.c_str())) {
+			std::clog << "Error: " << filename << ": unable to write share file" << std::endl;
+			return 1;
+		}
+		std::cout << "Share " << static_cast<int>(i + 1) << "/" << static_cast<int>(total)
+			  << " written to " << filename << std::endl;
+	}
+
+	std::cout << std::endl;
+	std::cout << "Key split into " << static_cast<int>(total) << " shares (threshold: "
+		  << static_cast<int>(threshold) << ")" << std::endl;
+	std::cout << "Any " << static_cast<int>(threshold)
+		  << " shares are sufficient to reconstruct the key." << std::endl;
+
+	// Securely clear key data
+	explicit_memset(&key_data[0], 0, key_data.size());
 
 	return 0;
 }

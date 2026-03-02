@@ -65,7 +65,9 @@ static void print_usage (std::ostream& out)
 	out << std::endl;
 	out << "Symmetric key commands:" << std::endl;
 	out << "  export-key FILE      export this repo's symmetric key to the given file" << std::endl;
+	out << "  split-key            split key into M-of-N Shamir shares" << std::endl;
 	out << "  unlock KEYFILE       decrypt this repo using the given symmetric key" << std::endl;
+	out << "  unlock --shares F..  decrypt this repo by combining Shamir key shares" << std::endl;
 	out << std::endl;
 	out << "Legacy commands:" << std::endl;
 	out << "  init KEYFILE         alias for 'unlock KEYFILE'" << std::endl;
@@ -119,6 +121,8 @@ static bool help_for_command (const char* command, std::ostream& out)
 		help_status(out);
 	} else if (std::strcmp(command, "add-age-recipient") == 0) {
 		help_add_age_recipient(out);
+	} else if (std::strcmp(command, "split-key") == 0) {
+		help_split_key(out);
 	} else {
 		return false;
 	}
@@ -244,6 +248,9 @@ try {
 		}
 		if (std::strcmp(command, "add-age-recipient") == 0) {
 			return add_age_recipient(argc, argv);
+		}
+		if (std::strcmp(command, "split-key") == 0) {
+			return split_key(argc, argv);
 		}
 		// Plumbing commands (executed by git, not by user):
 		if (std::strcmp(command, "clean") == 0) {
