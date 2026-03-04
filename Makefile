@@ -25,6 +25,9 @@ OBJFILES = \
     $(SRCDIR)/sops.o \
     $(SRCDIR)/audit.o \
     $(SRCDIR)/wallet.o \
+    $(SRCDIR)/ssh_signing.o \
+    $(SRCDIR)/policy.o \
+    $(SRCDIR)/proposal.o \
     $(SRCDIR)/key.o \
     $(SRCDIR)/util.o \
     $(SRCDIR)/parse_options.o \
