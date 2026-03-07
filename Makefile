@@ -38,9 +38,9 @@ OBJFILES += $(SRCDIR)/crypto-openssl-11.o
 LDFLAGS += -lcrypto
 
 # Object files needed by tests (shared library code, excluding git-crypt main)
-TEST_LIB_OBJS = $(SRCDIR)/crypto.o $(SRCDIR)/crypto-openssl-11.o $(SRCDIR)/key.o $(SRCDIR)/util.o $(SRCDIR)/coprocess.o $(SRCDIR)/fhstream.o
+TEST_LIB_OBJS = $(SRCDIR)/crypto.o $(SRCDIR)/crypto-openssl-11.o $(SRCDIR)/key.o $(SRCDIR)/util.o $(SRCDIR)/coprocess.o $(SRCDIR)/fhstream.o $(SRCDIR)/parse_options.o
 TEST_SRCDIR = tests
-TEST_OBJS = $(TEST_SRCDIR)/test_main.o $(TEST_SRCDIR)/test_crypto.o $(TEST_SRCDIR)/test_key.o
+TEST_OBJS = $(TEST_SRCDIR)/test_main.o $(TEST_SRCDIR)/test_crypto.o $(TEST_SRCDIR)/test_key.o $(TEST_SRCDIR)/test_parse_options.o $(TEST_SRCDIR)/test_crypto_extended.o
 TEST_RUNNER = $(TEST_SRCDIR)/test_runner
 
 XSLTPROC ?= xsltproc

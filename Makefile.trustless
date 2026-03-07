@@ -1,0 +1,117 @@
+#
+# Makefile.trustless - Build rules for git-crypt-trustless
+# Usage: make -f Makefile.trustless
+#
+
+CXXFLAGS ?= -Wall -pedantic -Wno-long-long -O2
+CXXFLAGS += -std=c++11
+PREFIX ?= /usr/local
+BINDIR ?= $(PREFIX)/bin
+
+SRCDIR = src
+TEST_SRCDIR = tests
+
+# Trustless-specific object files
+TRUSTLESS_OBJS = \
+    $(SRCDIR)/trustless_config.o \
+    $(SRCDIR)/trustless_chain.o \
+    $(SRCDIR)/trustless_rpc.o \
+    $(SRCDIR)/trustless_merkle.o \
+    $(SRCDIR)/trustless_zk.o \
+    $(SRCDIR)/trustless_migrate.o \
+    $(SRCDIR)/trustless_commands.o \
+    $(SRCDIR)/trustless_main.o
+
+# Shared object files from main build (EXCLUDING git-crypt.o to avoid duplicate argv0)
+SHARED_OBJS = \
+    $(SRCDIR)/commands.o \
+    $(SRCDIR)/crypto.o \
+    $(SRCDIR)/crypto-openssl-11.o \
+    $(SRCDIR)/gpg.o \
+    $(SRCDIR)/age.o \
+    $(SRCDIR)/shamir.o \
+    $(SRCDIR)/sops.o \
+    $(SRCDIR)/audit.o \
+    $(SRCDIR)/wallet.o \
+    $(SRCDIR)/ssh_signing.o \
+    $(SRCDIR)/policy.o \
+    $(SRCDIR)/proposal.o \
+    $(SRCDIR)/key.o \
+    $(SRCDIR)/util.o \
+    $(SRCDIR)/parse_options.o \
+    $(SRCDIR)/coprocess.o \
+    $(SRCDIR)/fhstream.o \
+    $(SRCDIR)/license.o \
+    $(SRCDIR)/license_gate.o
+
+LDFLAGS += -lcrypto
+
+# Test files
+TRUSTLESS_TEST_OBJS = \
+    $(TEST_SRCDIR)/test_trustless_main.o \
+    $(TEST_SRCDIR)/test_trustless.o \
+    $(TEST_SRCDIR)/test_trustless_merkle.o \
+    $(TEST_SRCDIR)/test_trustless_security.o
+
+TRUSTLESS_TEST_LIB = \
+    $(SRCDIR)/trustless_config.o \
+    $(SRCDIR)/trustless_chain.o \
+    $(SRCDIR)/trustless_rpc.o \
+    $(SRCDIR)/trustless_merkle.o \
+    $(SRCDIR)/trustless_zk.o \
+    $(SRCDIR)/trustless_migrate.o \
+    $(SRCDIR)/commands.o \
+    $(SRCDIR)/crypto.o \
+    $(SRCDIR)/crypto-openssl-11.o \
+    $(SRCDIR)/gpg.o \
+    $(SRCDIR)/age.o \
+    $(SRCDIR)/shamir.o \
+    $(SRCDIR)/sops.o \
+    $(SRCDIR)/audit.o \
+    $(SRCDIR)/wallet.o \
+    $(SRCDIR)/ssh_signing.o \
+    $(SRCDIR)/policy.o \
+    $(SRCDIR)/proposal.o \
+    $(SRCDIR)/util.o \
+    $(SRCDIR)/parse_options.o \
+    $(SRCDIR)/coprocess.o \
+    $(SRCDIR)/fhstream.o \
+    $(SRCDIR)/key.o \
+    $(SRCDIR)/license.o \
+    $(SRCDIR)/license_gate.o
+
+TRUSTLESS_TEST_RUNNER = $(TEST_SRCDIR)/test_trustless_runner
+
+all: git-crypt-trustless
+
+git-crypt-trustless: $(TRUSTLESS_OBJS) $(SHARED_OBJS)
+	$(CXX) $(CXXFLAGS) -o $@ $(TRUSTLESS_OBJS) $(SHARED_OBJS) $(LDFLAGS)
+
+$(SRCDIR)/%.o: $(SRCDIR)/%.cpp
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(TEST_SRCDIR)/%.o: $(TEST_SRCDIR)/%.cpp
+	$(CXX) $(CXXFLAGS) -I$(SRCDIR) -I$(TEST_SRCDIR) -c -o $@ $<
+
+$(TRUSTLESS_TEST_RUNNER): $(TRUSTLESS_TEST_OBJS) $(TRUSTLESS_TEST_LIB)
+	$(CXX) $(CXXFLAGS) -o $@ $(TRUSTLESS_TEST_OBJS) $(TRUSTLESS_TEST_LIB) $(LDFLAGS)
+
+test: $(TRUSTLESS_TEST_RUNNER)
+	./$(TRUSTLESS_TEST_RUNNER)
+
+test-contracts:
+	cd contracts && forge test -vvv
+
+test-e2e: git-crypt-trustless
+	./tests/test-trustless-e2e.sh
+
+test-all: test test-contracts test-e2e
+
+clean:
+	rm -f $(TRUSTLESS_OBJS) git-crypt-trustless $(TRUSTLESS_TEST_OBJS) $(TRUSTLESS_TEST_RUNNER)
+
+install: git-crypt-trustless
+	install -d $(DESTDIR)$(BINDIR)
+	install -m 755 git-crypt-trustless $(DESTDIR)$(BINDIR)/
+
+.PHONY: all test test-contracts test-e2e test-all clean install
