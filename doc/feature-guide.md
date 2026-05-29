@@ -1,6 +1,6 @@
 # git-crypt-revived: Complete Feature Walkthrough
 
-A comprehensive guide to all enhanced features in git-crypt-revived v0.9.0, covering the credentials workflow, age encryption with YubiKey support, wallet-based identity, Shamir key splitting, cryptographic audit trails, on-chain anchoring, and SOPS integration.
+A comprehensive guide to all enhanced features in git-crypt-revived v0.9.0, covering the credentials workflow, age encryption with YubiKey support, wallet-based identity, Shamir key splitting, cryptographic audit trails, on-chain anchoring, SOPS integration, and the licensing module.
 
 ## Prerequisites
 
@@ -33,6 +33,15 @@ foundryup
 
 # sops — structured secret encryption (optional, for sops-config)
 brew install sops
+```
+
+Build the licensing module (optional, for Part 9):
+
+```bash
+cd git-crypt
+make -f Makefile.license
+make -f Makefile.license install PREFIX=/usr/local
+git-crypt-license version
 ```
 
 ---
@@ -471,6 +480,182 @@ git-crypt refresh
 
 ---
 
+## Part 9: Licensing Module
+
+The licensing module provides per-user, per-operation license management with SSH-signed credentials, portable export/import, and optional on-chain anchoring. It ships as a separate binary (`git-crypt-license`) so existing workflows are unaffected.
+
+### Building the license binary
+
+```bash
+cd git-crypt
+make -f Makefile.license
+make -f Makefile.license install PREFIX=/usr/local
+
+# Verify
+git-crypt-license version
+```
+
+### Initialize licensing in a repository
+
+```bash
+cd my-secure-project
+
+git-crypt-license init
+# Licensing initialized.
+# Issuer fingerprint: SHA256:abc123...
+```
+
+This creates `.git-crypt/licenses/` and records your SSH signing key fingerprint as the issuer. Licensing is per-repo — each repository has its own issuer.
+
+### Issue a license
+
+```bash
+# Get the recipient's SSH key fingerprint
+ssh-keygen -l -f ~/.ssh/id_ed25519.pub | awk '{print $2}'
+# SHA256:xyz789...
+
+# Issue a license valid for 90 days, all operations
+git-crypt-license issue --to SHA256:xyz789... --scope "*" --expires 90d
+# License issued: a1b2c3d4e5f6a7b8
+#   To:       SHA256:xyz789...
+#   Scope:    *
+#   Expires:  2026-06-01T14:30:00Z
+
+# Issue a license scoped to specific operations
+git-crypt-license issue --to SHA256:xyz789... --scope "unlock,status" --expires 1y
+
+# Include a wallet address for on-chain features
+git-crypt-license issue --to SHA256:xyz789... --wallet 0xABC... --scope "*" --expires 90d
+```
+
+Duration formats: `90d` (days), `12w` (weeks), `6m` (months), `1y` (years), or an ISO 8601 date like `2027-01-01T00:00:00Z`.
+
+### Manage licenses
+
+```bash
+# List active licenses
+git-crypt-license list
+# a1b2c3d4e5f6a7b8  SHA256:xyz789...  *  2026-06-01T14:30:00Z  active
+
+# List all licenses including revoked and expired
+git-crypt-license list --all
+
+# JSON output (for x402 integration)
+git-crypt-license list --json
+
+# Show full license details
+git-crypt-license show a1b2c3d4e5f6a7b8
+# License ID:    a1b2c3d4e5f6a7b8
+# Fingerprint:   SHA256:xyz789...
+# Scope:         *
+# Issued:        2026-03-02T14:30:00Z
+# Expires:       2026-06-01T14:30:00Z
+# Status:        active
+# Signatures:    valid
+
+# Verify signatures and validity
+git-crypt-license verify a1b2c3d4e5f6a7b8
+# License:     a1b2c3d4e5f6a7b8
+# Status:      active
+# Valid:       yes
+# Signatures:  verified
+```
+
+### Export and import
+
+Licenses are portable — export from one repo and import into another:
+
+```bash
+# Export to a file (default: <id>.license)
+git-crypt-license export a1b2c3d4e5f6a7b8
+# License exported to a1b2c3d4e5f6a7b8.license
+
+# Export to a custom filename
+git-crypt-license export a1b2c3d4e5f6a7b8 ~/licenses/project.license
+
+# Import into another repository
+cd /other/repo
+git-crypt-license init
+git-crypt-license import ~/licenses/a1b2c3d4e5f6a7b8.license
+# License imported: a1b2c3d4e5f6a7b8
+```
+
+### License checks (gating)
+
+The `check` command verifies the current user has a valid license for an operation:
+
+```bash
+# Check if you can unlock
+git-crypt-license check --operation unlock
+# License valid for operation: unlock  (exit 0)
+
+# Check wildcard (any operation)
+git-crypt-license check
+# License valid for operation: *  (exit 0)
+```
+
+**Backward compatibility**: If licensing is not initialized in a repository (no `.git-crypt/licenses/issuer.txt`), `check` always returns exit 0. Existing repos without licensing are completely unaffected.
+
+### Revocation
+
+```bash
+# Revoke a license
+git-crypt-license revoke a1b2c3d4e5f6a7b8
+# License a1b2c3d4e5f6a7b8 revoked.
+
+# Verify: check now fails
+git-crypt-license check --operation unlock
+# No valid license for operation: unlock  (exit 1)
+
+# Revoked licenses are hidden from list but visible with --all
+git-crypt-license list         # empty
+git-crypt-license list --all   # shows revoked license
+
+# Anchor revocation on-chain (requires cast + funded wallet)
+git-crypt-license revoke a1b2c3d4e5f6a7b8 --anchor \
+    --rpc-url https://sepolia.base.org \
+    --from 0xYOUR_ADDRESS
+```
+
+### On-chain anchoring
+
+Anchor a license hash to a blockchain for immutable proof of issuance:
+
+```bash
+git-crypt-license anchor a1b2c3d4e5f6a7b8 \
+    --rpc-url https://sepolia.base.org \
+    --from 0xYOUR_ADDRESS
+# License hash:  e5f6a7b8c9d0...
+# Anchoring to:  https://sepolia.base.org
+# From:          0xYOUR_ADDRESS
+# Transaction:   0x1234abcd...
+# Anchor published successfully.
+
+# Verify the anchor
+git-crypt-license verify a1b2c3d4e5f6a7b8 --onchain
+# On-chain:    confirmed
+# Tx hash:     0x1234abcd...
+```
+
+### x402 License Server
+
+The licensing module includes an HTTP server implementing the x402 payment protocol for automated license issuance:
+
+```bash
+# Start the server
+git-crypt-license serve --port 8402 --rpc-url https://sepolia.base.org
+
+# Endpoints:
+#   GET  /health    → 200 OK
+#   GET  /verify    → 402 Payment Required (or 200 if licensed)
+#   GET  /licenses  → JSON list of licenses
+#   POST /issue     → Issue license after payment confirmation
+```
+
+See the [.onboarding](https://github.com/ramene/git-crypt-onboarding) repo for a hands-on walkthrough and automated E2E test harness (`test-licensing.sh`).
+
+---
+
 ## Full Lifecycle Example
 
 ```bash
@@ -505,4 +690,10 @@ git-crypt rm-age-recipient age1newperson...
 git-crypt rotate-key
 git-crypt refresh
 git-crypt anchor-audit    # anchor the rotation event
+
+# === LICENSING ===
+git-crypt-license init
+git-crypt-license issue --to SHA256:abc... --scope "*" --expires 90d
+git-crypt-license check --operation unlock   # gate operations
+git-crypt-license anchor LICENSE_ID --rpc-url https://sepolia.base.org --from 0xABC...
 ```

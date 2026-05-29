@@ -27,6 +27,13 @@ This fork picks up where AGWA/git-crypt left off (v0.8.0) and adds significant n
 - **Signed commit verification** -- verify GPG/SSH signatures on commits that touch encrypted files (`verify-commits`)
 - **.gitattributes tamper detection** -- `status` command detects when encryption attributes are removed
 
+### Licensing
+- **Per-user licensing** -- issue, verify, revoke, and export SSH-signed licenses per operation (`git-crypt-license`)
+- **License gating** -- gate git-crypt operations behind valid license checks with full backward compatibility
+- **On-chain anchoring** -- anchor license hashes to Ethereum-compatible chains for immutable proof
+- **x402 payment server** -- HTTP server implementing the x402 protocol for automated license issuance (`serve`)
+- **Portable licenses** -- export/import licenses between repositories
+
 ### User Management
 - **Remove GPG users** -- revoke a GPG user's access (`rm-gpg-user`)
 - **List GPG users** -- show all GPG user fingerprints per key (`ls-gpg-users`)
@@ -99,6 +106,7 @@ These are only needed for specific features and are **not** required for core gi
 | YubiKey support | [age-plugin-yubikey](https://github.com/str4d/age-plugin-yubikey) | `brew install age-plugin-yubikey` |
 | SOPS integration | [sops](https://github.com/getsops/sops) | `brew install sops` / `apt install sops` |
 | Wallet identity | Ethereum wallet (MetaMask, etc.) | N/A |
+| Licensing module | `git-crypt-license` binary | `make -f Makefile.license` |
 
 ## Quick Start
 
@@ -214,6 +222,22 @@ git-crypt unlock --age --identity ~/.ssh/id_ed25519
 | `anchor-audit` | Publish audit log hash to blockchain |
 | `add-wallet-recipient ADDR` | Add an Ethereum wallet as a collaborator |
 
+### Licensing Commands (separate `git-crypt-license` binary)
+
+| Command | Description |
+|---|---|
+| `init` | Initialize licensing in the repository |
+| `issue --to FP --expires DUR` | Issue a license to a recipient |
+| `list [--all] [--json]` | List licenses |
+| `show ID` | Show license details |
+| `verify ID [--onchain]` | Verify license signatures and validity |
+| `revoke ID [--anchor]` | Revoke a license |
+| `export ID [FILE]` | Export a license to a portable file |
+| `import FILE` | Import a license from file |
+| `check [--operation OP]` | Check if current user has a valid license |
+| `anchor ID --rpc-url URL --from ADDR` | Anchor license hash on-chain |
+| `serve --rpc-url URL [--port PORT]` | Start x402 HTTP license server |
+
 ## Security
 
 git-crypt encrypts files using AES-256 in CTR mode with a synthetic IV derived from the SHA-1 HMAC of the file. This is provably semantically secure under deterministic chosen-plaintext attack -- it leaks no information beyond whether two files are identical.
@@ -241,6 +265,7 @@ See the man page (`git-crypt help`) and [doc/SECURITY.md](doc/SECURITY.md) for f
 | [doc/SECURITY.md](doc/SECURITY.md) | Threat model and security best practices |
 | [doc/age-migration-guide.md](doc/age-migration-guide.md) | Migrating from GPG to age encryption |
 | [doc/post-quantum-readiness.md](doc/post-quantum-readiness.md) | Post-quantum cryptography assessment |
+| [doc/feature-guide.md](doc/feature-guide.md) | Complete feature walkthrough (Parts 1-9) |
 | [doc/multiple_keys.md](doc/multiple_keys.md) | Using multiple named keys |
 
 ## Contributing

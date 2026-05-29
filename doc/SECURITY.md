@@ -90,6 +90,31 @@ When files are checked out (decrypted), they exist in plaintext on the local fil
 - Never commit symmetric keys to the repository
 - Use hardware-backed keys (YubiKey via age-plugin-yubikey) for additional protection
 
+## License-Based Access Control
+
+The optional licensing module (`git-crypt-license`) adds per-user, per-operation access control on top of the encryption layer.
+
+### How Licensing Works
+
+- **Issuer**: A repository owner initializes licensing, recording their SSH key fingerprint as the trusted issuer
+- **Licenses**: Issued to individual SSH key fingerprints with a defined scope (operations) and expiration
+- **Signatures**: Each license is SSH-signed by the issuer; signatures are verified on every check
+- **Gating**: The `check` command verifies the caller has a valid, non-expired, non-revoked license for the requested operation
+- **Backward compatibility**: If licensing is not initialized (no `issuer.txt`), all checks pass — existing repos are unaffected
+
+### Security Properties
+
+- Licenses are stored as plaintext files (tab-separated) under `.git-crypt/licenses/<id>/license.txt`, with SSH signatures in `.git-crypt/licenses/<id>/signatures/`
+- Revocation is local (status field set to "revoked"); optional on-chain anchoring provides tamper-evident proof
+- License scope supports wildcard (`*`) or comma-separated operations (e.g., `unlock,status`)
+- Export/import allows portable license transfer between repositories
+
+### Limitations
+
+- Licensing is an **authorization** layer, not an **encryption** layer. A user with the symmetric key can still decrypt files regardless of license status, unless the application explicitly gates operations behind `license check`
+- License files are committed to the repository and visible to all collaborators
+- Signature verification relies on SSH key infrastructure — the same PQ vulnerabilities apply to license signatures as to age/SSH key wrapping (see [post-quantum-readiness.md](post-quantum-readiness.md))
+
 ## Key Management Best Practices
 
 1. **Use GPG or age key wrapping** instead of sharing symmetric keys directly. This allows per-user access control and revocation.
@@ -107,6 +132,8 @@ When files are checked out (decrypted), they exist in plaintext on the local fil
 7. **Back up your keys securely**. If all copies of the key are lost, encrypted content cannot be recovered.
 
 8. **Review `.gitattributes` changes carefully**. Changes to `.gitattributes` can silently disable encryption for specific files.
+
+9. **Use licensing for operation gating**. For repositories requiring per-user access control, initialize licensing (`git-crypt-license init`) and issue licenses with appropriate scopes and expiration dates. Revoke promptly when access should be removed.
 
 ## Known Limitations
 

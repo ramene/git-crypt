@@ -33,8 +33,9 @@ exceeds all foreseeable quantum attack capabilities.
 | ECDH/EdDSA (GPG) | Key wrapping for GPG ECC keys | **Vulnerable** | Shor's solves ECDLP in polynomial time |
 | X25519 (age) | Key wrapping for age recipients | **Vulnerable** | Shor's solves ECDLP in polynomial time |
 | Ed25519 (SSH keys via age) | Key wrapping for SSH key recipients | **Vulnerable** | Same as above |
+| Ed25519 (SSH signing) | License signatures (git-crypt-license) | **Vulnerable** | Shor's solves ECDLP; forged signatures could bypass license checks |
 
-**Assessment**: All asymmetric key-wrapping is vulnerable.  However,
+**Assessment**: All asymmetric key-wrapping and signing is vulnerable.  However,
 git-crypt delegates this entirely to external tools (gpg, age binaries),
 so the migration path is to adopt PQ-safe versions of those tools.
 
@@ -137,6 +138,7 @@ If SHA-1 deprecation becomes a concern (unlikely for HMAC usage):
 ### Changes When External Tools Are Ready
 - `gpg.cpp` — No code changes; GPG binary handles PQC transparently
 - `age.cpp` — No code changes; age binary handles PQC transparently
+- `license.cpp` / `license_commands.cpp` — License signatures use `ssh-keygen` for signing/verification; PQ-safe SSH key types will be inherited automatically when OpenSSH supports them
 - Help text updates to mention PQ key types
 
 ### Optional Future Improvements
