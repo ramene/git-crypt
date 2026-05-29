@@ -1,3 +1,13 @@
 *.o
-git-crypt
+*.o.tmp
 build/
+
+# Compiled binaries (build outputs — never commit)
+git-crypt
+git-crypt-license
+tests/test_runner
+tests/test_license_runner
+tests/test_trustless_runner
+
+# Per-operator Claude Code project context (symlinked to private Journal)
+.claude
