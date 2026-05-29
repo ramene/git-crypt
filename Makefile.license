@@ -1,0 +1,79 @@
+#
+# Makefile.license - Build rules for git-crypt-license
+# Usage: make -f Makefile.license
+#
+
+CXXFLAGS ?= -Wall -pedantic -Wno-long-long -O2
+CXXFLAGS += -std=c++11
+PREFIX ?= /usr/local
+BINDIR ?= $(PREFIX)/bin
+
+SRCDIR = src
+TEST_SRCDIR = tests
+
+# License-specific object files
+LICENSE_OBJS = \
+    $(SRCDIR)/license.o \
+    $(SRCDIR)/license_gate.o \
+    $(SRCDIR)/license_commands.o \
+    $(SRCDIR)/license_server.o \
+    $(SRCDIR)/license_main.o
+
+# Shared object files from main build (EXCLUDING git-crypt.o to avoid duplicate argv0)
+SHARED_OBJS = \
+    $(SRCDIR)/commands.o \
+    $(SRCDIR)/crypto.o \
+    $(SRCDIR)/crypto-openssl-11.o \
+    $(SRCDIR)/gpg.o \
+    $(SRCDIR)/age.o \
+    $(SRCDIR)/shamir.o \
+    $(SRCDIR)/sops.o \
+    $(SRCDIR)/audit.o \
+    $(SRCDIR)/wallet.o \
+    $(SRCDIR)/ssh_signing.o \
+    $(SRCDIR)/policy.o \
+    $(SRCDIR)/proposal.o \
+    $(SRCDIR)/key.o \
+    $(SRCDIR)/util.o \
+    $(SRCDIR)/parse_options.o \
+    $(SRCDIR)/coprocess.o \
+    $(SRCDIR)/fhstream.o
+
+LDFLAGS += -lcrypto
+
+# Test files
+LICENSE_TEST_OBJS = $(TEST_SRCDIR)/test_license_main.o $(TEST_SRCDIR)/test_license.o
+LICENSE_TEST_LIB = $(SRCDIR)/license.o $(SRCDIR)/license_gate.o \
+    $(SRCDIR)/commands.o $(SRCDIR)/crypto.o $(SRCDIR)/crypto-openssl-11.o \
+    $(SRCDIR)/gpg.o $(SRCDIR)/age.o $(SRCDIR)/shamir.o $(SRCDIR)/sops.o \
+    $(SRCDIR)/audit.o $(SRCDIR)/wallet.o \
+    $(SRCDIR)/ssh_signing.o $(SRCDIR)/policy.o $(SRCDIR)/proposal.o \
+    $(SRCDIR)/util.o $(SRCDIR)/parse_options.o \
+    $(SRCDIR)/coprocess.o $(SRCDIR)/fhstream.o $(SRCDIR)/key.o
+LICENSE_TEST_RUNNER = $(TEST_SRCDIR)/test_license_runner
+
+all: git-crypt-license
+
+git-crypt-license: $(LICENSE_OBJS) $(SHARED_OBJS)
+	$(CXX) $(CXXFLAGS) -o $@ $(LICENSE_OBJS) $(SHARED_OBJS) $(LDFLAGS)
+
+$(SRCDIR)/%.o: $(SRCDIR)/%.cpp
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(TEST_SRCDIR)/%.o: $(TEST_SRCDIR)/%.cpp
+	$(CXX) $(CXXFLAGS) -I$(SRCDIR) -I$(TEST_SRCDIR) -c -o $@ $<
+
+$(LICENSE_TEST_RUNNER): $(LICENSE_TEST_OBJS) $(LICENSE_TEST_LIB)
+	$(CXX) $(CXXFLAGS) -o $@ $(LICENSE_TEST_OBJS) $(LICENSE_TEST_LIB) $(LDFLAGS)
+
+test: $(LICENSE_TEST_RUNNER)
+	./$(LICENSE_TEST_RUNNER)
+
+clean:
+	rm -f $(LICENSE_OBJS) git-crypt-license $(LICENSE_TEST_OBJS) $(LICENSE_TEST_RUNNER)
+
+install: git-crypt-license
+	install -d $(DESTDIR)$(BINDIR)
+	install -m 755 git-crypt-license $(DESTDIR)$(BINDIR)/
+
+.PHONY: all test clean install
